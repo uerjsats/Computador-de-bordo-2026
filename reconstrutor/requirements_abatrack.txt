@@ -1,0 +1,12 @@
+# Dependencias do AbaTrack (testado em Python 3.14, Windows 11).
+# Instale com:  pip install -r requirements_abatrack.txt
+PyQt5
+PyQtWebEngine
+pyqtgraph
+PyOpenGL
+numpy
+matplotlib
+mplcursors
+folium
+pyserial
+pillow
