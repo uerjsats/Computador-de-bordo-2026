@@ -4,7 +4,14 @@
 #include <math.h>
 #include <DHT.h>
 #include <TinyGPSPlus.h>
+#include "telemetria.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
 
+//Fila criada no obc.ino
+extern QueueHandle_t filaTelemetria;
+extern sensorsData dados;
 
 //Definição GPS
 TinyGPSPlus gps; 
@@ -63,14 +70,12 @@ static float current_temperature = 0; // °C
 static float current_pressure = 0; //Pa(Pascal)
 static float current_humidity = 0; //%RH 
 
-
-
 void dhtBegin() {
     dht.begin();
 }
 
 // Retorna true se a leitura foi válida (evita mascarar falhas silenciosamente)
-bool dhtUpdate(float &temperatura, float &umidade) {
+void dhtUpdate(float &temperatura, float &umidade) {
     float h = dht.readHumidity();
     float t = dht.readTemperature();
 
@@ -78,9 +83,7 @@ bool dhtUpdate(float &temperatura, float &umidade) {
     if (!isnan(h) && !isnan(t)) {
         umidade = h;
         temperatura = t;
-        return true;
     }
-    return false;
 }
 
 /*MPU - Gyroscopio*/
@@ -387,5 +390,71 @@ void eepromReadBytes(uint16_t address, uint8_t* data, uint16_t length) {
         address += chunk;
         data += chunk;
         length -= chunk;
+    }
+}
+
+
+void taskSensores(void *pvParameters)
+{
+
+    gpsInit();
+    dhtBegin();
+    mpuInit(false);
+    bme_init();
+
+    sensorsData dados;
+
+    // GPS
+    float latitude = 0;
+    float longitude = 0;
+    int sats = 0;
+
+    // DHT
+    float temperatura = 0;
+    float umidade = 0;
+
+    // MPU
+    float accelX = 0;
+    float accelY = 0;
+    float accelZ = 0;
+
+    float gyroX = 0;
+    float gyroY = 0;
+    float gyroZ = 0;
+
+    mpuUpdate(gyroX, gyroY, gyroZ, accelX, accelY, accelZ);
+    dhtUpdate(temperatura, umidade);
+    bme_update();
+
+    float pressao = bme_get_pressure();
+    float altitude = bme_get_altitude(101739.0f);
+    gpsUpdate(latitude, longitude, sats);
+
+    while (true)
+    {
+        memset(&dados, 0, sizeof(sensorsData));
+
+        // Timestamp
+        dados.seconds = millis() / 1000;
+
+        // Sensores ambientais
+        dados.temperatura = temperatura * 100.0f;
+        dados.umidade = umidade * 100.0f;
+        dados.altitude = altitude * 10.0f;
+        dados.pressao = pressao;
+
+        // GPS
+        dados.latitude = latitude * 10000000.0f;
+        dados.longitude = longitude * 10000000.0f;
+        dados.sats = sats;
+
+        // Giroscópio
+        dados.roll  = gyroX * 100.0f;
+        dados.pitch = gyroY * 100.0f;
+        dados.yaw   = gyroZ * 100.0f;
+
+        // Envia para a fila
+        xQueueSend(filaTelemetria, &dados, 200);
+
     }
 }

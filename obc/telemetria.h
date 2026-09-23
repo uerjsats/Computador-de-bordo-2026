@@ -11,7 +11,6 @@
 
 #define START_BYTE   0x7E
 
-
 // Tipos de pacote — devem ser iguais no OBC (mainV1.4) e na estação de solo (LoRaRX)
 #define TYPE_SENSOR  0x01
 #define TYPE_GPS     0x02

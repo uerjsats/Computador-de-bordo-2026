@@ -6,7 +6,7 @@
 
 //dht 
 void dhtBegin();
-bool dhtUpdate(float &temperatura, float &umidade);
+void dhtUpdate(float &temperatura, float &umidade);
 
 //mpu 
 bool mpuInit(bool wire); 
@@ -49,5 +49,6 @@ void eepromWrite(uint16_t address, const T &value) {
     eepromWriteByte(address, (uint8_t*)&value, sizeof(T)); 
 }
 
-#endif
+void taskSensores(void *pvParameters);
 
+#endif
