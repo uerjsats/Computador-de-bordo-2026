@@ -15,7 +15,8 @@
 #define TYPE_SENSOR  0x01
 #define TYPE_GPS     0x02
 #define TYPE_GYRO    0x03
-#define TYPE_RESPOST 0x04
+#define TYPE_IMAGE   0x10
+#define TYPE_DEBUG   0x20
 #define TYPE_COMMAND 0x30
 
 // Endereços
@@ -27,10 +28,9 @@
 
 #define BUFFER_SIZE  256
 
-// Estrutura de dados de sensores
 // Comprimento dos campos-string preenchidos pelas placas escravas.
 // Vazio ("") quando a escrava ainda nao respondeu (o RX imprime em branco).
-#define SLAVE_STR_LEN  32
+#define SLAVE_STR_LEN  16
 #define CTRL_STR_LEN   64
 
 #pragma pack(push, 1)
@@ -67,16 +67,8 @@ struct sensorsData {
 
     // 11. Yaw   / Giro Z (graus × 100)
     int16_t yaw;
-
 };
 
-// Resposta completa enviada no downlink (TYPE_RESPOST):
-// telemetria + resposta de controle de atitude (placa escrava addr 3, = cData).
-struct respost {
-    sensorsData sensor;             // Telemetria (suprimento embutido como strings)
-    char controle[CTRL_STR_LEN];    // Resposta de controle de atitude (cData)
-};
-#pragma pack(pop)
 // Constrói cabeçalho de 4 bytes no buffer. Retorna 4 (próximo offset).
 inline uint8_t buildHeader(uint8_t* buf, uint8_t type, uint8_t src, uint8_t dst) {
     buf[0] = START_BYTE;
@@ -124,13 +116,6 @@ inline bool parseSensorData(const uint8_t* payload, uint16_t payloadSize, sensor
     return true;
 }
 
-// Parse respost completo (telemetria + resposta de controle) do payload.
-inline bool parseRespost(const uint8_t* payload, uint16_t payloadSize, respost* out) {
-    if (payloadSize < sizeof(respost)) return false;
-    memcpy(out, payload, sizeof(respost));
-    return true;
-}
-
 void telemetriaInit(uint8_t myAddress, uint8_t destAddress);
 void telemetriaProcess();
 
@@ -138,6 +123,12 @@ void telemetriaSendPacket(uint8_t* data, uint16_t size, uint8_t type);
 void telemetriaSendPacket(const char* payload, uint8_t type);
 
 void telemetriaOnPacketReceived(void (*callback)(uint8_t*, uint16_t));
+
+// Envio de imagens (fragmentado em chunks)
+void telemetriaSendImageRaw(uint8_t* data, uint32_t size);
+void telemetriaSendImage(uint8_t* data, uint16_t size);
+void telemetriaSendImageChunk();
+bool telemetriaIsImageSending();
 
 bool telemetriaIsIdle();
 void telemetriaSetTxInterval(unsigned long interval);

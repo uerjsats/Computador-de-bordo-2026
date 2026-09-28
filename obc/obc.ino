@@ -1,5 +1,6 @@
 #include "sensores.h"
 #include "telemetria.h"
+#include "networkManager.h"
 #include <Wire.h>
 #include <Arduino.h>
 
@@ -30,6 +31,16 @@ void setup() {
       3,
       NULL,
       1
+  );
+
+  xTaskCreatePinnedToCore(
+      taskWiFi,
+      "TaskWiFi",
+      8192,
+      NULL,
+      2,
+      NULL,
+      0
   );
 
 }
