@@ -7,6 +7,23 @@
 #define LORA_SPREADING_FACTOR 7
 #define LORA_CODINGRATE 5
 
+static bool ignorarSup = false;           // true = descartando suprimento
+static bool ultimaRespostaControle = false;
+static unsigned long ignorarSupDesde = 0; // quando comecou a ignorar suprimento
+#define TIMEOUT_CONTROLE_MS 5000          // seguranca: se controle nao responder, volta a ouvir suprimento
+
+// Acumuladores de linha parcial de cada serial (usados por lerLinha)
+static String accC;   // controle
+static String accS;   // suprimento
+
+// Linha aguardando envio via LoRa (movida da task para o escopo do arquivo
+// para o callback poder descartar linha de suprimento obsoleta)
+static String pendente;
+static bool pendenteEhControle = false;
+
+HardwareSerial controleSerial(2);
+HardwareSerial supSerial(1);
+
 #define PACKET_SIZE     180
 #define MAX_IMAGE_SIZE  50000
 
@@ -234,7 +251,6 @@ void telemetriaSetTxInterval(unsigned long interval)
 {
     txInterval = interval;
 }
-
 static void callbackTelemetria(uint8_t* data, uint16_t size)
 {
     uint8_t type = packetType(data);
@@ -246,17 +262,106 @@ static void callbackTelemetria(uint8_t* data, uint16_t size)
     }
 
     String cmd = "";
-
     for (uint16_t i = 0; i < payloadLen; i++) {
         cmd += (char)payload[i];
     }
+    cmd.trim();
 
-    if (cmd == "0" || cmd == "5" || cmd == "6" ||
-        cmd == "7" || cmd == "8" || cmd == "10" ||
-        cmd == "11" || cmd == "13") {
+    int num = cmd.toInt();
 
-        String msgMecanismo = String(ADDR_OBC) + ":" + cmd;
+    if (num >= 1 && num <= 11) {
+        ignorarSup = true;          // ignora suprimento até a resposta de controle sair
+        ignorarSupDesde = millis();
+
+        // descarta qualquer coisa de suprimento ja recebida/acumulada
+        while (supSerial.available()) supSerial.read();
+        accS = "";
+        if (!pendenteEhControle) pendente = "";   // linha de suprimento ainda nao enviada fica obsoleta
+
+        controleSerial.println(cmd);
     }
+    else if (num >= 12 && num <= 14) {
+        ignorarSup = false;         // quer resposta do suprimento
+        supSerial.println(cmd);
+    }
+
+    Serial.print("Comando Recebido de OBC: ");
+    Serial.println(cmd);
+}
+
+
+void serialInit()
+{
+
+    controleSerial.begin(9600, SERIAL_8N1, 33, 34);
+    supSerial.begin(9600, SERIAL_8N1, 19, 20);
+
+}
+
+bool telemetriaSendString(const char* texto)
+{
+    if (texto == nullptr) return false;
+
+    uint16_t size = strlen(texto);
+
+    if (size == 0) return false;
+    if (!idle) return false;
+    if (millis() - lastTxTime < txInterval) return false;
+    if ((uint32_t)size + HEADER_SIZE > BUFFER_SIZE) return false;
+
+    uint8_t idx = buildHeader(txBuffer, TYPE_STRING, myAddress, destAddress);
+    memcpy(&txBuffer[idx], texto, size);
+
+    idle = false;
+
+    int state = radio.startTransmit(txBuffer, size + idx);
+
+    if (state != RADIOLIB_ERR_NONE) {
+        idle = true;
+        return false;
+    }
+
+    lastTxTime = millis();
+    return true;
+}
+
+bool telemetriaSendString(const String& texto)
+{
+    return telemetriaSendString(texto.c_str());
+}
+
+static String lerLinha(HardwareSerial& s, String& acc)
+{
+    while (s.available()) {
+        char c = s.read();
+        if (c == '\n') {
+            String l = acc;
+            acc = "";
+            l.trim();
+            return l;
+        }
+        if (c != '\r') acc += c;
+    }
+    return "";
+}
+
+String processarResposta()
+{
+    String r = lerLinha(controleSerial, accC);
+    if (r.length()) {
+        ultimaRespostaControle = true;
+        return r;
+    }
+
+    ultimaRespostaControle = false;
+
+    if (ignorarSup) {
+        while (supSerial.available()) supSerial.read();
+        accS = "";
+        return "";
+    }
+
+    return lerLinha(supSerial, accS);
 }
 
 void taskTelemetria(void *parameter)
@@ -266,22 +371,49 @@ void taskTelemetria(void *parameter)
     telemetriaOnPacketReceived(callbackTelemetria);
     telemetriaInit(ADDR_OBC, ADDR_GROUND);
 
+    unsigned long lastSensorSend = 0;
+
+    serialInit();
+
     while (true)
     {
         telemetriaProcess();
+        
+        unsigned long now = millis();
 
+        // timeout de seguranca: controle nao respondeu, volta a ouvir suprimento
+        if (ignorarSup && (now - ignorarSupDesde > TIMEOUT_CONTROLE_MS)) {
+            ignorarSup = false;
+        }
+
+        if (pendente.length() == 0) {
+            pendente = processarResposta();
+            if (pendente.length()) {
+                Serial.println(pendente);
+            }
+            pendenteEhControle = ultimaRespostaControle;
+        }
+
+        if (pendente.length() && telemetriaSendString(pendente)) {
+            if (pendenteEhControle) {
+                ignorarSup = false;   // resposta de controle enviada: volta a ouvir suprimento
+            }
+            pendente = "";
+            pendenteEhControle = false;
+        }
         if (xQueueReceive(filaTelemetria, &dados, 0) == pdPASS)
         {
-            if (telemetriaIsIdle())
+            if (telemetriaIsIdle() && now - lastSensorSend >= 2000)
             {
                 telemetriaSendPacket(
                     (uint8_t*)&dados,
                     sizeof(dados),
                     TYPE_SENSOR
                 );
+                lastSensorSend = now;
             }
         }
-
+        
         if (imageReady && !telemetriaIsImageSending())
         {
             uint8_t* imgBuf = getImageBuffer();

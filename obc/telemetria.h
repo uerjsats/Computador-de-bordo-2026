@@ -5,6 +5,7 @@
 #include <RadioLib.h>
 #include <stdint.h>
 #include <string.h>
+#include <HardwareSerial.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -18,6 +19,7 @@
 #define TYPE_IMAGE   0x10
 #define TYPE_DEBUG   0x20
 #define TYPE_COMMAND 0x30
+#define TYPE_STRING  0x40
 
 // Endereços
 #define ADDR_GROUND  0x01
@@ -132,6 +134,9 @@ bool telemetriaIsImageSending();
 
 bool telemetriaIsIdle();
 void telemetriaSetTxInterval(unsigned long interval);
+
+bool telemetriaSendString(const char* texto);
+bool telemetriaSendString(const String& texto);
 
 void taskTelemetria(void *parameter);
 
