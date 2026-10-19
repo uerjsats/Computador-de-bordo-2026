@@ -7,19 +7,17 @@
 #define LORA_SPREADING_FACTOR 7
 #define LORA_CODINGRATE 5
 
-static bool ignorarSup = false;           // true = descartando suprimento
-static bool ultimaRespostaControle = false;
-static unsigned long ignorarSupDesde = 0; // quando comecou a ignorar suprimento
-#define TIMEOUT_CONTROLE_MS 5000          // seguranca: se controle nao responder, volta a ouvir suprimento
+#define TIMEOUT_REQ_MS 3000   // se o suprimento nao responder, reenvia REQ_INA
 
 // Acumuladores de linha parcial de cada serial (usados por lerLinha)
 static String accC;   // controle
 static String accS;   // suprimento
 
-// Linha aguardando envio via LoRa (movida da task para o escopo do arquivo
-// para o callback poder descartar linha de suprimento obsoleta)
+// Linha aguardando envio via LoRa
 static String pendente;
-static bool pendenteEhControle = false;
+
+// Instante do ultimo REQ_INA enviado ao suprimento
+static unsigned long ultimoReq = 0;
 
 HardwareSerial controleSerial(2);
 HardwareSerial supSerial(1);
@@ -267,26 +265,7 @@ static void callbackTelemetria(uint8_t* data, uint16_t size)
     }
     cmd.trim();
 
-    int num = cmd.toInt();
-
-    if (num >= 1 && num <= 11) {
-        ignorarSup = true;          // ignora suprimento até a resposta de controle sair
-        ignorarSupDesde = millis();
-
-        // descarta qualquer coisa de suprimento ja recebida/acumulada
-        while (supSerial.available()) supSerial.read();
-        accS = "";
-        if (!pendenteEhControle) pendente = "";   // linha de suprimento ainda nao enviada fica obsoleta
-
-        controleSerial.println(cmd);
-    }
-    else if (num >= 12 && num <= 14) {
-        ignorarSup = false;         // quer resposta do suprimento
-        supSerial.println(cmd);
-    }
-
-    Serial.print("Comando Recebido de OBC: ");
-    Serial.println(cmd);
+    controleSerial.println(cmd);
 }
 
 
@@ -348,18 +327,7 @@ static String lerLinha(HardwareSerial& s, String& acc)
 String processarResposta()
 {
     String r = lerLinha(controleSerial, accC);
-    if (r.length()) {
-        ultimaRespostaControle = true;
-        return r;
-    }
-
-    ultimaRespostaControle = false;
-
-    if (ignorarSup) {
-        while (supSerial.available()) supSerial.read();
-        accS = "";
-        return "";
-    }
+    if (r.length()) return r;
 
     return lerLinha(supSerial, accS);
 }
@@ -378,42 +346,31 @@ void taskTelemetria(void *parameter)
     while (true)
     {
         telemetriaProcess();
-        
+
         unsigned long now = millis();
 
-        // timeout de seguranca: controle nao respondeu, volta a ouvir suprimento
-        if (ignorarSup && (now - ignorarSupDesde > TIMEOUT_CONTROLE_MS)) {
-            ignorarSup = false;
-        }
-
-        if (pendente.length() == 0) {
-            pendente = processarResposta();
-            if (pendente.length()) {
-                Serial.println(pendente);
-            }
-            pendenteEhControle = ultimaRespostaControle;
-        }
-
-        if (pendente.length() && telemetriaSendString(pendente)) {
-            if (pendenteEhControle) {
-                ignorarSup = false;   // resposta de controle enviada: volta a ouvir suprimento
-            }
-            pendente = "";
-            pendenteEhControle = false;
-        }
+        // 1) Envia sensores e, logo depois, solicita o suprimento
         if (xQueueReceive(filaTelemetria, &dados, 0) == pdPASS)
         {
             if (telemetriaIsIdle() && now - lastSensorSend >= 2000)
             {
-                telemetriaSendPacket(
-                    (uint8_t*)&dados,
-                    sizeof(dados),
-                    TYPE_SENSOR
-                );
+                telemetriaSendPacket((uint8_t*)&dados, sizeof(dados), TYPE_SENSOR);
                 lastSensorSend = now;
+                supSerial.println("REQ_INA");
             }
         }
-        
+
+        // 2) Lê a resposta (suprimento ou controle) e envia como string
+        if (pendente.length() == 0) {
+            Serial.println(pendente);
+            pendente = processarResposta();
+        }
+
+        if (pendente.length() && telemetriaSendString(pendente)) {
+            pendente = "";
+        }
+
+        // 3) Imagem (igual ao que você já tinha)
         if (imageReady && !telemetriaIsImageSending())
         {
             uint8_t* imgBuf = getImageBuffer();
@@ -430,7 +387,6 @@ void taskTelemetria(void *parameter)
         if (telemetriaIsImageSending())
         {
             telemetriaSendImageChunk();
-
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
