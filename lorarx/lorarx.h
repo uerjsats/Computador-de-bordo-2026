@@ -14,6 +14,7 @@
 #define TYPE_IMAGE   0x10
 #define TYPE_DEBUG   0x20
 #define TYPE_COMMAND 0x30
+#define TYPE_STRING  0x40
 
 #define ADDR_GROUND  0x01
 #define ADDR_OBC     0x02
@@ -21,23 +22,57 @@
 #define HEADER_SIZE  4
 #define BUFFER_SIZE  256
 #define PACKET_SIZE  180
+#define BAT_STR_LEN  64
 
 #define MAX_IMAGE_SIZE       45900
 #define IMAGE_CHUNK_TIMEOUT  5000
 
 #pragma pack(push, 1)
 struct sensorsData {
+    // 1. Tempo (s)
     uint32_t seconds;
-    int16_t  temperatura;
-    int16_t  umidade;
-    int16_t  altitude;
+
+    // 2. Temperatura ambiente (°C × 100)
+    int16_t temperatura;
+
+    // 3. Umidade (% × 100)
+    int16_t umidade;
+
+    // 4. Altitude (m × 10)
+    int16_t altitude;
+
+    // 5. Pressão (Pa)
     uint32_t pressao;
-    int32_t  latitude;
-    int32_t  longitude;
-    uint8_t  sats;
-    int16_t  roll;
-    int16_t  pitch;
-    int16_t  yaw;
+
+    // 6. Latitude (graus × 10^7)
+    int32_t latitude;
+
+    // 7. Longitude (graus × 10^7)
+    int32_t longitude;
+
+    // 8. Número de satélites
+    uint8_t sats;
+
+    // 9. Roll (graus × 100)
+    int16_t roll;
+
+    // 10. Pitch (graus × 100)
+    int16_t pitch;
+
+    // 11. Yaw (graus × 100)
+    int16_t yaw;
+    
+    // 13. Temperatura da bateria 1 (°C × 100)
+    int16_t temperaturaBateria1;
+
+    // 14. Temperatura da bateria 2 (°C × 100)
+    int16_t temperaturaBateria2;
+
+    // 15. Tensão de alimentação (V × 1000)
+    uint16_t tensao;
+
+    // 16. Corrente elétrica (A × 1000)
+    int16_t corrente;
 };
 #pragma pack(pop)
 
@@ -46,6 +81,8 @@ struct LoraRxStats {
     uint32_t sensorCount       = 0;
     uint32_t imageCount        = 0;
     uint32_t commandCount      = 0;
+    uint32_t stringCount       = 0;
+    uint32_t orangeCount       = 0;
     uint32_t desconhecidos     = 0;
     uint32_t comandosEnviados  = 0;
     uint32_t imagensCompletas  = 0;
@@ -98,7 +135,8 @@ inline bool parseSensorData(const uint8_t* payload, uint16_t payloadSize, sensor
 
 void  lorarxInit(uint8_t myAddress, uint8_t destAddress);
 void  lorarxProcess();
-void  lorarxSendCommand(const char* comando);
+// true = transmitido; false = radio ocupado / intervalo minimo (tente de novo)
+bool  lorarxSendCommand(const char* comando);
 bool  lorarxIsIdle();
 void  lorarxSetTxInterval(unsigned long interval);
 float lorarxGetRSSI();
