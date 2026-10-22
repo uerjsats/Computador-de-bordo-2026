@@ -35,12 +35,54 @@
 #define SLAVE_STR_LEN  16
 #define CTRL_STR_LEN   64
 
+// =====================================================================
+//  MISSAO ADS-B — ORANGE PI ZERO 3  (UART com o OBC)
+//  Tudo que voce pode querer ajustar esta aqui.
+// =====================================================================
+
+// --- Fiacao (Heltec WiFi LoRa 32 V3 <-> Orange Pi, 3,3 V, 8N1) ---
+// TODO: CONFIRME os pinos com a sua fiacao. 33/34 ja sao usados pela serial de controle.
+//   Heltec OP_SERIAL_RX_PIN  <-  TX do Orange (UART0 de debug)
+//   Heltec OP_SERIAL_TX_PIN  ->  RX do Orange
+//   GND comum. NUNCA ligar em 5 V.
+#define OP_SERIAL_RX_PIN   6
+#define OP_SERIAL_TX_PIN   7
+#define OP_BAUD            115200   // tem que ser igual a Config.BAUD do adsb_cubesat.py
+
+// --- Missao AUTONOMA (sem telecomando) ---
+// 1 = o OBC faz PING -> (TIME) -> START sozinho assim que o Orange responde.
+// 0 = so inicia por telecomando "OP,START" (ou pelo console USB).
+#define OP_AUTO_START         0
+#define OP_AUTO_ATRASO_MS     10000UL   // espera apos ligar o OBC antes da 1a tentativa
+#define OP_AUTO_REINTENTO_MS  5000UL    // intervalo entre tentativas (PING / START)
+#define OP_AUTO_DURACAO_S     600       // duracao da missao enviada no START (0 = sem limite)
+#define OP_AUTO_REINICIAR     0         // 1 = ao fim dos 10 min (EVT,DONE) inicia outra missao
+
+// Orange nao tem RTC. Se > 0, o OBC envia TIME = este epoch + uptime do OBC.
+// Ex.: 1761000000UL. Deixe 0 para nao enviar (ou use "OP,TIME,<epoch>" pelo solo).
+#define OP_TIME_EPOCH_INICIAL 0UL
+
+// --- Supervisao ---
+#define OP_STATUS_INTERVALO_MS 30000UL  // com missao rodando, pede STATUS a cada 30 s (e repassa ao solo)
+#define OP_SILENCIO_MS         90000UL  // sem nenhuma linha valida do Orange por 90 s => volta a SEM_CONTATO
+
+// --- Missao secundaria (QRY) ---
+#define OP_QRY_TIMEOUT_MS   3000UL      // espera pelo QRES
+#define OP_QRY_TENTATIVAS   3           // depois disso o veredito vira INDETERMINADO
+
+// --- LoRa ---
+#define OP_AC_AGRUPAR  1                // 1 = junta varios "AC" em um unico pacote LoRa (separados por '\n')
+
+// --- Debug ---
+#define OP_CONSOLE_USB 1                // 1 = aceita "OP,<cmd>" digitado no Monitor Serial (USB)
+#define OP_LOG_AC      1                // 1 = imprime cada AC no Monitor Serial
+
 #pragma pack(push, 1)
 struct sensorsData {
     // 1. Tempo (s)
     uint32_t seconds;
 
-    // 2. Temperatura (°C × 100)
+    // 2. Temperatura ambiente (°C × 100)
     int16_t temperatura;
 
     // 3. Umidade (% × 100)
@@ -58,18 +100,31 @@ struct sensorsData {
     // 7. Longitude (graus × 10^7)
     int32_t longitude;
 
-    // 8. Número de Satélites
+    // 8. Número de satélites
     uint8_t sats;
 
-    // 9.  Roll  / Giro X (graus × 100)
+    // 9. Roll (graus × 100)
     int16_t roll;
 
-    // 10. Pitch / Giro Y (graus × 100)
+    // 10. Pitch (graus × 100)
     int16_t pitch;
 
-    // 11. Yaw   / Giro Z (graus × 100)
+    // 11. Yaw (graus × 100)
     int16_t yaw;
+    
+    // 13. Temperatura da bateria 1 (°C × 100)
+    int16_t temperaturaBateria1;
+
+    // 14. Temperatura da bateria 2 (°C × 100)
+    int16_t temperaturaBateria2;
+
+    // 15. Tensão de alimentação (V × 1000)
+    uint16_t tensao;
+
+    // 16. Corrente elétrica (A × 1000)
+    int16_t corrente;
 };
+#pragma pack(pop)
 
 // Constrói cabeçalho de 4 bytes no buffer. Retorna 4 (próximo offset).
 inline uint8_t buildHeader(uint8_t* buf, uint8_t type, uint8_t src, uint8_t dst) {
@@ -137,6 +192,24 @@ void telemetriaSetTxInterval(unsigned long interval);
 
 bool telemetriaSendString(const char* texto);
 bool telemetriaSendString(const String& texto);
+
+// ---------------------------------------------------------------------
+//  API da missao Orange Pi
+// ---------------------------------------------------------------------
+
+// Missao secundaria: pergunta ao Orange se a aeronave detectada pelo ESP32 e
+// AUTORIZADA (nao clandestina). Pode ser chamada de QUALQUER task (ex.: a que
+// recebe o pacote Wi-Fi/TCP do ESP32). Nao bloqueia: so enfileira.
+// O veredito sai sozinho para o solo via LoRa:
+//   VEREDITO,NAO_CLANDESTINA,<icao>,<callsign>,<lat>,<lon>
+//   VEREDITO,CLANDESTINA,<lat>,<lon>
+//   VEREDITO,INDETERMINADO,<lat>,<lon>     (Orange nao respondeu)
+// Retorna false se a fila esta cheia ou a telemetria ainda nao iniciou.
+bool opConsultarAeronave(double lat, double lon, const char* icao24 = nullptr);
+
+// Executa um comando "de solo" (sem o prefixo "OP,"). Ex.: "START,60", "STOP",
+// "QRY,-22.88,-43.30", "AUTO,0", "ESTADO". Chamado pelo callback LoRa e pelo console USB.
+void opComandoSolo(const String& cmd);
 
 void taskTelemetria(void *parameter);
 
