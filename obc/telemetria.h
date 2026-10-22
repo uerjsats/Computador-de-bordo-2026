@@ -38,10 +38,15 @@
 // =====================================================================
 //  MISSAO ADS-B — ORANGE PI ZERO 3  (UART com o OBC)
 //  Tudo que voce pode querer ajustar esta aqui.
+//
+//  Protocolo (igual ao adsb_cubesat.py):
+//    OBC -> Orange:  2:COMANDO[,arg,...][*XX]\r\n   ex.: "2:START,60*6A"
+//    Orange -> OBC:  2:TIPO[,campo,...][*XX]\n      ex.: "2:ACK,START,1"
+//    "2" = endereco do Orange (Config.ENDERECO_ORANGE no .py).
+//    *XX = XOR hex dos caracteres depois de "2:" (opcional; validado se vier).
 // =====================================================================
 
 // --- Fiacao (Heltec WiFi LoRa 32 V3 <-> Orange Pi, 3,3 V, 8N1) ---
-// TODO: CONFIRME os pinos com a sua fiacao. 33/34 ja sao usados pela serial de controle.
 //   Heltec OP_SERIAL_RX_PIN  <-  TX do Orange (UART0 de debug)
 //   Heltec OP_SERIAL_TX_PIN  ->  RX do Orange
 //   GND comum. NUNCA ligar em 5 V.
@@ -49,9 +54,15 @@
 #define OP_SERIAL_TX_PIN   7
 #define OP_BAUD            115200   // tem que ser igual a Config.BAUD do adsb_cubesat.py
 
+// --- Protocolo ---
+#define OP_PREFIXO         "2:"     // endereco do Orange (Config.ENDERECO_ORANGE no .py)
+#define OP_CHECKSUM_TX     1        // 1 = comandos saem com "*XX" (o .py valida quando vem)
+
 // --- Missao AUTONOMA (sem telecomando) ---
 // 1 = o OBC faz PING -> (TIME) -> START sozinho assim que o Orange responde.
 // 0 = so inicia por telecomando "OP,START" (ou pelo console USB).
+// Obs.: o .py nao entrega o EVT,BOOT (sai antes de a porta abrir); o contato e
+// feito sempre por PING.
 #define OP_AUTO_START         0
 #define OP_AUTO_ATRASO_MS     10000UL   // espera apos ligar o OBC antes da 1a tentativa
 #define OP_AUTO_REINTENTO_MS  5000UL    // intervalo entre tentativas (PING / START)
@@ -76,6 +87,7 @@
 // --- Debug ---
 #define OP_CONSOLE_USB 1                // 1 = aceita "OP,<cmd>" digitado no Monitor Serial (USB)
 #define OP_LOG_AC      1                // 1 = imprime cada AC no Monitor Serial
+#define OP_DEBUG_RAW   1                // 1 = imprime cada byte vindo do Orange (hex se nao imprimivel). Volte a 0 depois.
 
 #pragma pack(push, 1)
 struct sensorsData {

@@ -245,7 +245,10 @@ void telemetriaSetTxInterval(unsigned long interval)
 
 // =====================================================================
 //  MISSAO ADS-B — ORANGE PI
-//  Protocolo:  $TIPO,campo,campo*XX\n   (XX = XOR hex dos chars entre $ e *)
+//  Protocolo (igual ao adsb_cubesat.py):
+//    OBC -> Orange:  2:COMANDO[,arg,...][*XX]
+//    Orange -> OBC:  2:TIPO[,campo,...][*XX]
+//    XX = XOR hex dos caracteres depois de "2:" (opcional; validado se vier)
 // =====================================================================
 
 #define OP_LINHA_MAX 200
@@ -303,17 +306,21 @@ static void opMudar(OpEstado e)
     OPLOG("[OP] estado -> %s\n", OP_NOMES[e]);
 }
 
+// Envia um comando ao Orange: "2:CORPO[*XX]\r\n"
 static void opEnviar(const char* corpo)
 {
+    String linha = String(OP_PREFIXO) + corpo;          // ex.: "2:PING"
+
+#if OP_CHECKSUM_TX
     uint8_t cs = 0;
     for (const char* p = corpo; *p; p++) cs ^= (uint8_t)*p;
+    char ck[4];
+    snprintf(ck, sizeof(ck), "*%02X", cs);
+    linha += ck;                                        // ex.: "2:PING*10"
+#endif
 
-    char linha[OP_LINHA_MAX + 8];
-    int n = snprintf(linha, sizeof(linha), "$%s*%02X\n", corpo, cs);
-    if (n <= 0 || n >= (int)sizeof(linha)) return;
-
-    orangeSerial.write((const uint8_t*)linha, n);
-    OPLOG("[OP] TX: %s", linha);
+    orangeSerial.println(linha);
+    Serial.println("[OP] TX: " + linha);
 }
 
 static void opEncaminhar(const char* corpo)
@@ -374,29 +381,37 @@ static void opPublicarEstado()
     prioFila.push(b);
 }
 
-// Trata uma linha completa vinda do Orange (comeca em '$').
-static void opTratarLinha(const char* linha)
+// Trata uma linha completa vinda do Orange ("2:TIPO,campos[*XX]").
+static void opTratarLinha(const char* bruta)
 {
-    const char* ast = strrchr(linha, '*');
-    if (!ast || strlen(ast) != 3) { opLinhasInvalidas++; return; }
-
-    uint8_t cs = 0;
-    for (const char* p = linha + 1; p < ast; p++) cs ^= (uint8_t)*p;
-
-    char hex[3] = { ast[1], ast[2], 0 };
-    char* fim = nullptr;
-    long rx = strtol(hex, &fim, 16);
-    if (*fim != 0 || (uint8_t)rx != cs) {
-        opLinhasInvalidas++;
-        OPLOG("[OP] checksum invalido, ignorada\n");
-        return;
-    }
+    // Procura o endereco "2:" (tolera lixo antes, ex.: boot do U-Boot)
+    const char* ini = strstr(bruta, OP_PREFIXO);
+    if (!ini) { opLinhasInvalidas++; return; }          // lixo ou outro subsistema
+    ini += strlen(OP_PREFIXO);
 
     char corpo[OP_LINHA_MAX];
-    size_t n = (size_t)(ast - (linha + 1));
-    if (n >= sizeof(corpo)) n = sizeof(corpo) - 1;
-    memcpy(corpo, linha + 1, n);
-    corpo[n] = 0;
+    strncpy(corpo, ini, sizeof(corpo) - 1);
+    corpo[sizeof(corpo) - 1] = 0;
+
+    // Tira espacos no fim
+    size_t lc = strlen(corpo);
+    while (lc && corpo[lc - 1] == ' ') corpo[--lc] = 0;
+
+    // Checksum opcional: se vier "*XX", tem que bater
+    char* ast = strrchr(corpo, '*');
+    if (ast) {
+        uint8_t cs = 0;
+        for (char* p = corpo; p < ast; p++) cs ^= (uint8_t)*p;
+        char* fim = nullptr;
+        long rx = strtol(ast + 1, &fim, 16);
+        if (fim == ast + 1 || *fim != 0 || (uint8_t)rx != cs) {
+            opLinhasInvalidas++;
+            OPLOG("[OP] checksum invalido, ignorada\n");
+            return;
+        }
+        *ast = 0;                                       // corpo sem o "*XX"
+    }
+    if (!corpo[0]) return;
 
     opLinhasOk++;
     opUltimoRx = millis();
@@ -491,18 +506,27 @@ static void opTratarLinha(const char* linha)
     #undef T
 }
 
-// Le a UART do Orange sem bloquear. Ressincroniza em '$'; lixo de boot e ignorado.
+// Le a UART do Orange sem bloquear. Uma linha = tudo ate '\n' ou '\r'.
+// Com OP_DEBUG_RAW, imprime cada byte recebido antes de qualquer filtro.
 static void opLerOrange()
 {
     int guarda = 0;
     while (orangeSerial.available() && guarda++ < 512) {
         char c = (char)orangeSerial.read();
-        if (c == '$') { opAcc[0] = '$'; opAccLen = 1; continue; }
-        if (opAccLen == 0) continue;
+
+#if OP_DEBUG_RAW
+        if ((uint8_t)c >= 32 && (uint8_t)c <= 126) Serial.write(c);
+        else if (c == '\n') Serial.print("<LF>\n");
+        else if (c == '\r') Serial.print("<CR>");
+        else Serial.printf("<%02X>", (uint8_t)c);
+#endif
+
         if (c == '\n' || c == '\r') {
-            opAcc[opAccLen] = 0;
-            opTratarLinha(opAcc);
-            opAccLen = 0;
+            if (opAccLen) {
+                opAcc[opAccLen] = 0;
+                opTratarLinha(opAcc);
+                opAccLen = 0;
+            }
             continue;
         }
         if (opAccLen < sizeof(opAcc) - 1) opAcc[opAccLen++] = c;
@@ -614,8 +638,8 @@ static void opInit()
     orangeSerial.begin(OP_BAUD, SERIAL_8N1, OP_SERIAL_RX_PIN, OP_SERIAL_TX_PIN);
     opProxTentativa = millis() + OP_AUTO_ATRASO_MS;
     opUltimoRx = millis();
-    OPLOG("[OP] pronto. auto=%d  RX=%d TX=%d  baud=%d\n",
-          OP_AUTO_START, OP_SERIAL_RX_PIN, OP_SERIAL_TX_PIN, OP_BAUD);
+    OPLOG("[OP] pronto. auto=%d  RX=%d TX=%d  baud=%d  prefixo=%s\n",
+          OP_AUTO_START, OP_SERIAL_RX_PIN, OP_SERIAL_TX_PIN, OP_BAUD, OP_PREFIXO);
 }
 
 // Chamada a cada volta do loop da task.
@@ -671,7 +695,11 @@ static void opDespacharPrio(unsigned long now)
 {
     if (!idle || (now - lastTxTime) < txInterval) return;
     if (prioFila.vazia()) return;
-    if (telemetriaSendString(prioFila.em(0))) prioFila.pop();
+    if (telemetriaSendString(prioFila.em(0))) {
+        Serial.print("[TX->BASE] ");
+        Serial.println(prioFila.em(0));   // lê antes do pop
+        prioFila.pop();
+    }
 }
 
 static void opDespacharAC(unsigned long now)
@@ -718,6 +746,7 @@ static void callbackTelemetria(uint8_t* data, uint16_t size)
         cmd += (char)payload[i];
     }
     cmd.trim();
+    Serial.println(cmd);
 
     // "OP,<comando>" => missao do Orange Pi. Qualquer outra coisa segue para a placa de controle.
     String up = cmd;
@@ -809,6 +838,7 @@ void taskTelemetria(void *parameter)
                 accC.trim();
                 if (accC.length())
                 {
+                    Serial.print("[CTRL]: ");
                     Serial.println(accC);
                     prioFila.push(accC.c_str());
                 }
