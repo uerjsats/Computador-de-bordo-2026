@@ -73,6 +73,11 @@ PORTA_FIXA = r"\\.\COM15"
 # Mostra popups da imagem alem do preview na janela de debug.
 MOSTRAR_POPUPS = True
 
+# A camera do satelite envia a imagem de cabeca para baixo: gira 180 graus
+# antes de exibir/salvar. Coloque False se a correcao for feita no firmware.
+ROTACIONAR_180 = True
+JPEG_QUALIDADE_REENCODE = 95
+
 INSTALL_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), APP_NAME)
 INSTALL_PATH = os.path.join(INSTALL_DIR, f"{APP_NAME}.exe")
 
@@ -187,7 +192,7 @@ class AppDebug:
     def __init__(self):
         self.fila: queue.Queue = queue.Queue()
         self.leitor = None
-        self.ultima_imagem = None  # bytes do ultimo JPEG
+        self.ultima_imagem = None  # bytes do ultimo JPEG (ja corrigido)
         self._preview_ref = None   # mantem ref do PhotoImage (preview)
         self.popups = []
 
@@ -367,6 +372,18 @@ class AppDebug:
         except Exception:
             self._log("JPEG corrompido — nao renderizado.", "err")
             return
+
+        # Corrige a orientacao (camera montada de cabeca para baixo).
+        if ROTACIONAR_180:
+            img = img.rotate(180)
+            try:
+                buf = io.BytesIO()
+                img.convert("RGB").save(buf, format="JPEG",
+                                        quality=JPEG_QUALIDADE_REENCODE)
+                # "Salvar imagem..." grava a versao ja corrigida.
+                self.ultima_imagem = buf.getvalue()
+            except Exception as e:
+                self._log(f"Falha ao re-codificar imagem girada: {e}", "err")
 
         # Preview na janela principal (lado direito).
         prev = img.copy()
