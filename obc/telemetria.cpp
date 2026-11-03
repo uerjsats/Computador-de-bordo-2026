@@ -1,21 +1,21 @@
 #include "telemetria.h"
 #include "networkManager.h"
 #include <strings.h>
+#include <SoftwareSerial.h>     // biblioteca "EspSoftwareSerial"
 
-#define RF_FREQUENCY 915.0
-#define TX_OUTPUT_POWER 20
-#define LORA_BANDWIDTH 125.0
-#define LORA_SPREADING_FACTOR 7
-#define LORA_CODINGRATE 5
+FilaStr<16, 120> prioFila;
+FilaStr<24, 96> acFila;
+FilaStr<4, SUP_LINHA_MAX> supFila;
 
-// Acumulador de linha parcial da serial de controle (nao bloqueante)
-static String accC;
+// Acumulador de linha parcial (nao bloqueante)
+static String accS;     // suprimento de energia
 
-HardwareSerial controleSerial(2);
-HardwareSerial orangeSerial(1);     // UART1 <-> Orange Pi
+// UART0 = Serial (USB). NAO usar HardwareSerial(0) para outra coisa.
+HardwareSerial orangeSerial(1);     // UART1 <-> Orange Pi        (pinos 6/7)
+HardwareSerial controleSerial(2);   // UART2 <-> Controle atitude (pinos 33/34)
+SoftwareSerial supSerial;           // serial simulada <-> Suprimento (pinos 19/20)
 
-#define PACKET_SIZE     180
-#define MAX_IMAGE_SIZE  50000
+static unsigned long janelaRx = 0;   // marco da ultima atividade de radio
 
 extern QueueHandle_t filaTelemetria;
 
@@ -61,13 +61,12 @@ static void handleReceived(uint8_t* payload, uint16_t size)
     uint8_t dst = packetDst(payload);
 
     // So aceita pacotes enderecados a este dispositivo e vindos do par esperado
-    if (dst != myAddress || src != destAddress) {
+        if (dst != myAddress || src != destAddress) {
         return;
     }
 
-    // Repassa o pacote INTEIRO (com cabecalho) para o callback.
-    // O callback usa packetType()/packetPayload()/packetPayloadSize() de protocol.h
-    // para interpretar.
+    janelaRx = millis();   // base falou: segura o TX mais um pouco
+
     if (packetCallback)
         packetCallback(payload, size);
 }
@@ -139,27 +138,37 @@ void telemetriaProcess()
             }
         }
 
-        radio.startReceive();
+        // Se o callback ja disparou uma transmissao (resposta do controle),
+        // NAO volta a receber agora, senao corta o envio.
+        if (idle) radio.startReceive();
     }
 }
 
-void telemetriaSendPacket(uint8_t* data, uint16_t size, uint8_t type)
+bool telemetriaSendPacket(uint8_t* data, uint16_t size, uint8_t type)
 {
-    if (!idle) return;
-    if (millis() - lastTxTime < txInterval) return;
-    if ((uint32_t)size + HEADER_SIZE > BUFFER_SIZE) return;
+    if (!idle) return false;
+    if (millis() - lastTxTime < txInterval) return false;
+    if ((uint32_t)size + HEADER_SIZE > BUFFER_SIZE) return false;
 
     uint8_t idx = buildHeader(txBuffer, type, myAddress, destAddress);
     memcpy(&txBuffer[idx], data, size);
 
     idle = false;
-    radio.startTransmit(txBuffer, size + idx);
+    int state = radio.startTransmit(txBuffer, size + idx);
+    if (state != RADIOLIB_ERR_NONE) {
+        Serial.printf("[LORA] erro startTransmit: %d\n", state);
+        idle = true;
+        radio.startReceive();
+        return false;
+    }
+
     lastTxTime = millis();
+    return true;
 }
 
-void telemetriaSendPacket(const char* payload, uint8_t type)
+bool telemetriaSendPacket(const char* payload, uint8_t type)
 {
-    telemetriaSendPacket((uint8_t*)payload, strlen(payload), type);
+    return telemetriaSendPacket((uint8_t*)payload, strlen(payload), type);
 }
 
 void telemetriaOnPacketReceived(void (*callback)(uint8_t*, uint16_t))
@@ -187,7 +196,6 @@ void telemetriaSendImage(uint8_t* data, uint16_t size)
     imgTx.index = 0;
     imgTx.total = (size + PACKET_SIZE - 1) / PACKET_SIZE;
     imgTx.ativo = true;
-
 }
 
 void telemetriaSendImageChunk()
@@ -221,6 +229,7 @@ void telemetriaSendImageChunk()
     if (state != RADIOLIB_ERR_NONE) {
         imgTx.ativo = false;
         idle = true;
+        radio.startReceive();
         return;
     }
 
@@ -243,61 +252,6 @@ void telemetriaSetTxInterval(unsigned long interval)
     txInterval = interval;
 }
 
-// =====================================================================
-//  MISSAO ADS-B — ORANGE PI
-//  Protocolo (igual ao adsb_cubesat.py):
-//    OBC -> Orange:  2:COMANDO[,arg,...][*XX]
-//    Orange -> OBC:  2:TIPO[,campo,...][*XX]
-//    XX = XOR hex dos caracteres depois de "2:" (opcional; validado se vier)
-// =====================================================================
-
-#define OP_LINHA_MAX 200
-#define OP_LOTE_MAX  200      // bytes de payload LoRa por lote de AC (+4 de cabecalho < 256)
-#define OPLOG(...)   Serial.printf(__VA_ARGS__)
-
-// Fila circular de strings (acessada so pela taskTelemetria)
-template <uint8_t N, size_t L>
-struct FilaStr {
-    char d[N][L];
-    uint8_t h = 0, t = 0, n = 0;
-    uint32_t perdidos = 0;
-
-    void push(const char* s) {
-        if (n == N) { h = (h + 1) % N; n--; perdidos++; }   // cheia: descarta a mais antiga
-        strncpy(d[t], s, L - 1);
-        d[t][L - 1] = 0;
-        t = (t + 1) % N;
-        n++;
-    }
-    bool vazia() const { return n == 0; }
-    const char* em(uint8_t i) const { return d[(h + i) % N]; }
-    void pop() { if (n) { h = (h + 1) % N; n--; } }
-};
-
-static FilaStr<16, 120> prioFila;   // EVT, ACK, NAK, STATUS, VEREDITO, respostas do controle
-static FilaStr<24, 96>  acFila;     // aeronaves decodificadas
-
-enum OpEstado : uint8_t { OP_SEM_CONTATO = 0, OP_VIVO = 1, OP_EXECUTANDO = 2 };
-static const char* const OP_NOMES[] = {"SEM_CONTATO", "VIVO", "EXECUTANDO"};
-
-static OpEstado      opEstado = OP_SEM_CONTATO;
-static bool          opAutoAtivo = (OP_AUTO_START != 0);
-static bool          opMissaoConcluida = false;
-static unsigned long opProxTentativa = 0;
-static unsigned long opUltimoRx = 0;
-static unsigned long opUltimoStatus = 0;
-static uint32_t      opAcRx = 0, opLinhasOk = 0, opLinhasInvalidas = 0;
-
-// Consulta QRY em andamento (uma por vez)
-struct OpQry { double lat; double lon; char icao[8]; };
-static QueueHandle_t filaQry = nullptr;
-static OpQry         qryAtual;
-static bool          qryAtiva = false;
-static unsigned long qryT = 0;
-static uint8_t       qryTent = 0;
-
-static char   opAcc[OP_LINHA_MAX];
-static size_t opAccLen = 0;
 
 static void opMudar(OpEstado e)
 {
@@ -415,7 +369,7 @@ static void opTratarLinha(const char* bruta)
 
     opLinhasOk++;
     opUltimoRx = millis();
-    if (opEstado == OP_SEM_CONTATO) opAoFicarVivo();   // qualquer linha valida = Orange vivo (envia TIME se configurado)
+    if (opEstado == OP_SEM_CONTATO) opAoFicarVivo();   // qualquer linha valida = Orange vivo
 
     char w[OP_LINHA_MAX];
     strcpy(w, corpo);
@@ -440,7 +394,7 @@ static void opTratarLinha(const char* bruta)
     // ---- EVT ----
     if (!strcmp(t[0], "EVT")) {
         if (!strcmp(T(1), "BOOT")) {
-            opMissaoConcluida = false;      // Orange reiniciou (ex.: queda de energia): recomeca
+            opMissaoConcluida = false;      // Orange reiniciou: recomeca
             opAoFicarVivo();
         } else if (!strcmp(T(1), "DONE")) {
             opMudar(OP_VIVO);
@@ -453,9 +407,7 @@ static void opTratarLinha(const char* bruta)
 
     // ---- ACK ----
     if (!strcmp(t[0], "ACK")) {
-        if (!strcmp(T(1), "PING")) {
-            // contato ja tratado acima (opAoFicarVivo)
-        } else if (!strcmp(T(1), "START")) {
+        if (!strcmp(T(1), "START")) {
             opMudar(OP_EXECUTANDO);
             opUltimoStatus = millis();
         } else if (!strcmp(T(1), "STOP")) {
@@ -507,7 +459,6 @@ static void opTratarLinha(const char* bruta)
 }
 
 // Le a UART do Orange sem bloquear. Uma linha = tudo ate '\n' ou '\r'.
-// Com OP_DEBUG_RAW, imprime cada byte recebido antes de qualquer filtro.
 static void opLerOrange()
 {
     int guarda = 0;
@@ -554,6 +505,7 @@ void opComandoSolo(const String& cmdIn)
     String c = cmdIn;
     c.trim();
     c.toUpperCase();
+    c.replace(" ", "");                 // tolera "OP, START, 60"
     if (c.length() == 0 || c.length() > OP_LINHA_MAX - 10) {
         prioFila.push("NAK,OP,VAZIO_OU_LONGO");
         return;
@@ -563,7 +515,6 @@ void opComandoSolo(const String& cmdIn)
     String nome = (v < 0) ? c : c.substring(0, v);
     String arg  = (v < 0) ? String("") : c.substring(v + 1);
 
-    // --- comandos locais do OBC ---
     if (nome == "AUTO") {
         if (arg == "1") {
             opAutoAtivo = true;
@@ -580,7 +531,7 @@ void opComandoSolo(const String& cmdIn)
     }
     if (nome == "ESTADO") { opPublicarEstado(); return; }
 
-    // --- missao secundaria: passa pela fila para gerar o VEREDITO ---
+    // Missao secundaria: passa pela fila para gerar o VEREDITO ---
     if (nome == "QRY") {
         int p1 = arg.indexOf(',');
         if (p1 < 0) { prioFila.push("NAK,OP,QRY,ARG"); return; }
@@ -594,7 +545,7 @@ void opComandoSolo(const String& cmdIn)
         return;
     }
 
-    // --- comandos repassados ao Orange ---
+    // Comandos repassados ao Orange 
     if (nome == "PING" || nome == "START" || nome == "STOP" || nome == "STATUS" ||
         nome == "TIME" || nome == "MODE"  || nome == "DUMP") {
         if (nome == "STOP")  opAutoAtivo = false;           // operador mandou parar: nao reinicia sozinho
@@ -690,6 +641,47 @@ static void opTick(unsigned long now)
     }
 }
 
+static unsigned long supUltimoPedido = 0;
+
+static void supInit()
+{
+    supSerial.begin(SUP_BAUD, SWSERIAL_8N1, SUP_RX_PIN, SUP_TX_PIN, false);
+    Serial.printf("[SUP] pronto. RX=%d TX=%d baud=%d\n", SUP_RX_PIN, SUP_TX_PIN, SUP_BAUD);
+}
+
+static void supTick(unsigned long now)
+{
+    // 1) pede a leitura (nao espera resposta aqui)
+    if (now - supUltimoPedido >= SUP_INTERVALO_MS) {
+        supSerial.println(SUP_PEDIDO);
+        supUltimoPedido = now;
+    }
+
+    // 2) le o que tiver chegado, monta linhas
+    while (supSerial.available()) {
+        char c = (char)supSerial.read();
+        if (c == '\n') {
+            accS.trim();
+            if (accS.length()) {
+                Serial.print("[SUP]: ");
+                Serial.println(accS);
+                supFila.push(accS.c_str());
+            }
+            accS = "";
+        } else if (c != '\r' && accS.length() < SUP_LINHA_MAX - 1) {
+            accS += c;
+        }
+    }
+}
+
+static void ctrlInit()
+{
+    controleSerial.setRxBufferSize(512);
+    controleSerial.begin(CTRL_BAUD, SERIAL_8N1, CTRL_RX_PIN, CTRL_TX_PIN);
+    controleSerial.setTimeout(CTRL_TIMEOUT_MS);
+    Serial.printf("[CTRL] pronto. RX=%d TX=%d baud=%d\n", CTRL_RX_PIN, CTRL_TX_PIN, CTRL_BAUD);
+}
+
 // ----- Despacho LoRa -----
 static void opDespacharPrio(unsigned long now)
 {
@@ -697,8 +689,19 @@ static void opDespacharPrio(unsigned long now)
     if (prioFila.vazia()) return;
     if (telemetriaSendString(prioFila.em(0))) {
         Serial.print("[TX->BASE] ");
-        Serial.println(prioFila.em(0));   // lê antes do pop
+        Serial.println(prioFila.em(0));   // le antes do pop
         prioFila.pop();
+    }
+}
+
+static void supDespachar(unsigned long now)
+{
+    if (!idle || (now - lastTxTime) < txInterval) return;
+    if (supFila.vazia()) return;
+    if (telemetriaSendString(supFila.em(0))) {
+        Serial.print("[TX->BASE] ");
+        Serial.println(supFila.em(0));
+        supFila.pop();
     }
 }
 
@@ -729,8 +732,6 @@ static void opDespacharAC(unsigned long now)
     }
 }
 
-// =====================================================================
-
 static void callbackTelemetria(uint8_t* data, uint16_t size)
 {
     uint8_t type = packetType(data);
@@ -746,25 +747,31 @@ static void callbackTelemetria(uint8_t* data, uint16_t size)
         cmd += (char)payload[i];
     }
     cmd.trim();
+    Serial.print("[RX<-BASE] ");
     Serial.println(cmd);
 
     // "OP,<comando>" => missao do Orange Pi. Qualquer outra coisa segue para a placa de controle.
     String up = cmd;
     up.toUpperCase();
+    up.replace(" ", "");
     if (up.startsWith("OP,")) {
-        opComandoSolo(cmd.substring(3));
+        opComandoSolo(up.substring(3));
         return;
     }
 
     controleSerial.println(cmd);
-}
+    Serial.print("[TX->CTRL] ");
+    Serial.println(cmd);
 
-
-void serialInit()
-{
-
-    controleSerial.begin(9600, SERIAL_8N1, 33, 34);
-
+    if(controleSerial.available())
+    {
+        // Le a resposta e envia a string inteira pra base
+        String resposta = controleSerial.readStringUntil('\n');
+        resposta.trim();
+        Serial.print("[CTRL]: ");
+        Serial.println(resposta);
+        telemetriaSendString(resposta);
+    }   
 }
 
 bool telemetriaSendString(const char* texto)
@@ -786,7 +793,9 @@ bool telemetriaSendString(const char* texto)
     int state = radio.startTransmit(txBuffer, size + idx);
 
     if (state != RADIOLIB_ERR_NONE) {
+        Serial.printf("[LORA] erro startTransmit: %d\n", state);
         idle = true;
+        radio.startReceive();
         return false;
     }
 
@@ -809,8 +818,11 @@ void taskTelemetria(void *parameter)
     telemetriaInit(ADDR_OBC, ADDR_GROUND);
 
     unsigned long lastSensorSend = 0;
+    unsigned long ultimoSensorFila = millis();   // debug: ultima vez que chegou sensor na fila
+    unsigned long ultimoAvisoFila  = 0;
 
-    serialInit();
+    ctrlInit();
+    supInit();
     opInit();
 
     while (true)
@@ -818,39 +830,29 @@ void taskTelemetria(void *parameter)
         telemetriaProcess();
 
         unsigned long now = millis();
+        if (!telemetriaIsIdle()) janelaRx = now;
 
         // Missao Orange: le serial, console USB, QRY, missao autonoma, supervisao
         opTick(now);
+
+        // Suprimento de energia: pede e le a resposta (nao bloqueia).
+        supTick(now);
 
         // 1) Guarda o dado de sensores mais recente
         if (xQueueReceive(filaTelemetria, &dados, 0) == pdPASS)
         {
             ultimoSensor = dados;
             sensorPendente = true;
+            ultimoSensorFila = now;
         }
-
-        // 2) Serial de controle (nao bloqueante). A resposta vai para a fila prioritaria.
-        while (controleSerial.available())
+        else if (now - ultimoSensorFila > 5000 && now - ultimoAvisoFila > 5000)
         {
-            char c = (char)controleSerial.read();
-            if (c == '\n')
-            {
-                accC.trim();
-                if (accC.length())
-                {
-                    Serial.print("[CTRL]: ");
-                    Serial.println(accC);
-                    prioFila.push(accC.c_str());
-                }
-                accC = "";
-            }
-            else if (c != '\r' && accC.length() < CTRL_STR_LEN * 2)
-            {
-                accC += c;
-            }
+            // Se aparecer isso, o problema esta na task dos sensores (nao chega nada na fila)
+            Serial.println("[TEL] AVISO: nenhum sensor na filaTelemetria ha mais de 5 s");
+            ultimoAvisoFila = now;
         }
 
-        // 3) Imagem pronta -> inicia transmissao
+        // 2) Imagem pronta -> inicia transmissao
         if (imageReady && !telemetriaIsImageSending())
         {
             uint8_t* imgBuf = getImageBuffer();
@@ -864,7 +866,6 @@ void taskTelemetria(void *parameter)
             imageReady = false;
         }
 
-        // 4) Despacho LoRa. Prioridade: mensagens (EVT/ACK/STATUS/VEREDITO) > imagem > sensores > AC
         if (!prioFila.vazia())
         {
             opDespacharPrio(now);
@@ -875,11 +876,20 @@ void taskTelemetria(void *parameter)
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
-        else if (sensorPendente && telemetriaIsIdle() && now - lastSensorSend >= 2000)
+        else if (sensorPendente && (now - lastSensorSend) >= 2000 &&
+                 telemetriaIsIdle() && (now - lastTxTime) >= txInterval)
         {
-            telemetriaSendPacket((uint8_t*)&ultimoSensor, sizeof(ultimoSensor), TYPE_SENSOR);
-            lastSensorSend = now;
-            sensorPendente = false;
+            // SO o pacote do sensor. Nada de suprimento aqui.
+            if (telemetriaSendPacket((uint8_t*)&ultimoSensor, sizeof(ultimoSensor), TYPE_SENSOR))
+            {
+                Serial.println("[TX->BASE] SENSOR");
+                lastSensorSend = now;
+                sensorPendente = false;     // so da baixa se transmitiu de verdade
+            }
+        }
+        else if (!supFila.vazia())
+        {
+            supDespachar(now);
         }
         else
         {

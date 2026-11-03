@@ -35,21 +35,15 @@
 #define SLAVE_STR_LEN  16
 #define CTRL_STR_LEN   64
 
-// =====================================================================
-//  MISSAO ADS-B — ORANGE PI ZERO 3  (UART com o OBC)
-//  Tudo que voce pode querer ajustar esta aqui.
-//
-//  Protocolo (igual ao adsb_cubesat.py):
-//    OBC -> Orange:  2:COMANDO[,arg,...][*XX]\r\n   ex.: "2:START,60*6A"
-//    Orange -> OBC:  2:TIPO[,campo,...][*XX]\n      ex.: "2:ACK,START,1"
-//    "2" = endereco do Orange (Config.ENDERECO_ORANGE no .py).
-//    *XX = XOR hex dos caracteres depois de "2:" (opcional; validado se vier).
-// =====================================================================
 
-// --- Fiacao (Heltec WiFi LoRa 32 V3 <-> Orange Pi, 3,3 V, 8N1) ---
-//   Heltec OP_SERIAL_RX_PIN  <-  TX do Orange (UART0 de debug)
-//   Heltec OP_SERIAL_TX_PIN  ->  RX do Orange
-//   GND comum. NUNCA ligar em 5 V.
+// --- Suprimento de energia (INA) — serial simulada ---
+#define SUP_RX_PIN          19        // Heltec RX  <-  TX da placa de energia
+#define SUP_TX_PIN          20        // Heltec TX  ->  RX da placa de energia
+#define SUP_BAUD            9600
+#define SUP_PEDIDO          "REQ_INA" // pedido enviado a placa de energia
+#define SUP_INTERVALO_MS    2000UL    // pede o INA a cada 2 s
+#define SUP_LINHA_MAX       128
+
 #define OP_SERIAL_RX_PIN   6
 #define OP_SERIAL_TX_PIN   7
 #define OP_BAUD            115200   // tem que ser igual a Config.BAUD do adsb_cubesat.py
@@ -58,11 +52,6 @@
 #define OP_PREFIXO         "2:"     // endereco do Orange (Config.ENDERECO_ORANGE no .py)
 #define OP_CHECKSUM_TX     1        // 1 = comandos saem com "*XX" (o .py valida quando vem)
 
-// --- Missao AUTONOMA (sem telecomando) ---
-// 1 = o OBC faz PING -> (TIME) -> START sozinho assim que o Orange responde.
-// 0 = so inicia por telecomando "OP,START" (ou pelo console USB).
-// Obs.: o .py nao entrega o EVT,BOOT (sai antes de a porta abrir); o contato e
-// feito sempre por PING.
 #define OP_AUTO_START         0
 #define OP_AUTO_ATRASO_MS     10000UL   // espera apos ligar o OBC antes da 1a tentativa
 #define OP_AUTO_REINTENTO_MS  5000UL    // intervalo entre tentativas (PING / START)
@@ -87,7 +76,74 @@
 // --- Debug ---
 #define OP_CONSOLE_USB 1                // 1 = aceita "OP,<cmd>" digitado no Monitor Serial (USB)
 #define OP_LOG_AC      1                // 1 = imprime cada AC no Monitor Serial
-#define OP_DEBUG_RAW   1                // 1 = imprime cada byte vindo do Orange (hex se nao imprimivel). Volte a 0 depois.
+#define OP_DEBUG_RAW   0                // 1 = imprime cada byte vindo do Orange (hex se nao imprimivel)
+
+#define PACKET_SIZE     180
+#define MAX_IMAGE_SIZE  50000
+
+#define RX_WINDOW_MS  1000      // tempo so ouvindo depois de cada TX / RX
+
+#define OP_LINHA_MAX 200
+#define OP_LOTE_MAX  200      // bytes de payload LoRa por lote de AC (+4 de cabecalho < 256)
+#define OPLOG(...)   Serial.printf(__VA_ARGS__)
+
+#define CTRL_BAUD         9600
+#define CTRL_RX_PIN       33
+#define CTRL_TX_PIN       34
+#define CTRL_TIMEOUT_MS   1000  // tempo maximo esperando a resposta do controle
+
+#define RF_FREQUENCY 915.0
+#define TX_OUTPUT_POWER 20
+#define LORA_BANDWIDTH 125.0
+#define LORA_SPREADING_FACTOR 7
+#define LORA_CODINGRATE 5
+
+// Fila circular de strings (acessada so pela taskTelemetria)
+template <uint8_t N, size_t L>
+struct FilaStr {
+    char d[N][L];
+    uint8_t h = 0, t = 0, n = 0;
+    uint32_t perdidos = 0;
+
+    void push(const char* s) {
+        if (n == N) { h = (h + 1) % N; n--; perdidos++; }   // cheia: descarta a mais antiga
+        strncpy(d[t], s, L - 1);
+        d[t][L - 1] = 0;
+        t = (t + 1) % N;
+        n++;
+    }
+    bool vazia() const { return n == 0; }
+    const char* em(uint8_t i) const { return d[(h + i) % N]; }
+    void pop() { if (n) { h = (h + 1) % N; n--; } }
+};
+
+
+
+extern FilaStr<16, 120> prioFila;
+extern FilaStr<24, 96> acFila;
+extern FilaStr<4, SUP_LINHA_MAX> supFila;
+
+enum OpEstado : uint8_t { OP_SEM_CONTATO = 0, OP_VIVO = 1, OP_EXECUTANDO = 2 };
+static const char* const OP_NOMES[] = {"SEM_CONTATO", "VIVO", "EXECUTANDO"};
+
+static OpEstado      opEstado = OP_SEM_CONTATO;
+static bool          opAutoAtivo = (OP_AUTO_START != 0);
+static bool          opMissaoConcluida = false;
+static unsigned long opProxTentativa = 0;
+static unsigned long opUltimoRx = 0;
+static unsigned long opUltimoStatus = 0;
+static uint32_t      opAcRx = 0, opLinhasOk = 0, opLinhasInvalidas = 0;
+
+// Consulta QRY em andamento (uma por vez)
+struct OpQry { double lat; double lon; char icao[8]; };
+static QueueHandle_t filaQry = nullptr;
+static OpQry         qryAtual;
+static bool          qryAtiva = false;
+static unsigned long qryT = 0;
+static uint8_t       qryTent = 0;
+
+static char   opAcc[OP_LINHA_MAX];
+static size_t opAccLen = 0;
 
 #pragma pack(push, 1)
 struct sensorsData {
@@ -188,8 +244,8 @@ inline bool parseSensorData(const uint8_t* payload, uint16_t payloadSize, sensor
 void telemetriaInit(uint8_t myAddress, uint8_t destAddress);
 void telemetriaProcess();
 
-void telemetriaSendPacket(uint8_t* data, uint16_t size, uint8_t type);
-void telemetriaSendPacket(const char* payload, uint8_t type);
+bool telemetriaSendPacket(uint8_t* data, uint16_t size, uint8_t type);
+bool telemetriaSendPacket(const char* payload, uint8_t type);
 
 void telemetriaOnPacketReceived(void (*callback)(uint8_t*, uint16_t));
 
