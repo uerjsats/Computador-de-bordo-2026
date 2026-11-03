@@ -1,0 +1,12 @@
+# Dependencias Windows para o leitor central + image receiver (pasta sats/)
+# Instale com:  pip install -r requirements_windows.txt
+pyserial
+pillow
+pyinstaller
+
+# Opcional — so para REGENERAR a imagem mock (MockEstacaoSolo/gerar_imagem_mock.py):
+# opencv-python
+# numpy
+
+# OBS: o AbaTrack tem dependencias proprias (PyQt5, matplotlib, folium, numpy,
+# pyserial). Veja AbaTrack/README.md. A equipe ja costuma ter isso instalado.
