@@ -136,10 +136,10 @@ static void handleSensor(const uint8_t* pl, uint16_t plSize, uint16_t totalSize)
     float pitch_deg   = dados.pitch / 100.0f;
     float yaw_deg     = dados.yaw / 100.0f;
 
-    float tempBat1    = dados.temperaturaBateria1 / 100.0f;
-    float tempBat2    = dados.temperaturaBateria2 / 100.0f;
-    float tensao      = dados.tensao / 1000.0f;
-    float corrente    = dados.corrente / 1000.0f;
+    float tempBat1 = bateria.valido ? bateria.temperatura1 : dados.temperaturaBateria1 / 100.0f;
+    float tempBat2 = bateria.valido ? bateria.temperatura2 : dados.temperaturaBateria2 / 100.0f;
+    float tensao   = bateria.valido ? bateria.tensao       : dados.tensao / 1000.0f;
+    float corrente = bateria.valido ? bateria.corrente     : dados.corrente / 1000.0f;
 
     Serial.print(dados.seconds); Serial.print(":");
     Serial.print(temperatura, 2); Serial.print(":");
@@ -235,7 +235,11 @@ static void handleString(const uint8_t* pl, uint16_t plSize)
 
     // Prefixos opcionais de origem
     if (buf[0] == 'C' && buf[1] == ':') {
-        Serial.println("Controle de Atitude");
+        char* dados = buf + 2;
+        // Se vier "C:3:...", pula o "3:" também
+        if (dados[0] == '3' && dados[1] == ':') dados += 2;
+        Serial.print("Controle de Atitude: ");
+        Serial.println(dados);
         return;
     }
 
@@ -261,8 +265,8 @@ static void handleString(const uint8_t* pl, uint16_t plSize)
 
     int cmd = atoi(linha);
 
-    if (cmd == 1) {
-        // Bateria: "1:tempBat1:tempBat2:tensao:corrente"
+        if (cmd == 1) {
+        // Suprimento: "1:tempBat1:tempBat2:tensao:corrente"
         float v[4];
         int nv = 0;
         char* tok = strtok(resto, ":");
@@ -271,7 +275,7 @@ static void handleString(const uint8_t* pl, uint16_t plSize)
             tok = strtok(nullptr, ":");
         }
         if (nv < 4) {
-            Serial.print("BATERIA_INVALIDA: ");
+            Serial.print("BATERIA_INVALIDA:");
             Serial.println(resto);
             return;
         }
@@ -281,16 +285,12 @@ static void handleString(const uint8_t* pl, uint16_t plSize)
         bateria.tensao       = v[2];
         bateria.corrente     = v[3];
         bateria.valido       = true;
-
-        Serial.print("BATERIA:");
-        Serial.print(bateria.temperatura1, 2); Serial.print(":");
-        Serial.print(bateria.temperatura2, 2); Serial.print(":");
-        Serial.print(bateria.tensao, 3);       Serial.print(":");
-        Serial.println(bateria.corrente, 3);
+        // Sem print aqui: os valores saem na proxima linha do AbaTrack (handleSensor)
     }
     else if (cmd == 2) {
         // Missão
-        Serial.println("Missão");
+        Serial.print("Missão");
+        Serial.println(resto);
     }
     else if (cmd == 3) {
         // Controle de atitude
