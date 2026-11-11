@@ -89,6 +89,29 @@ Características:
 * Baixo consumo energético
 * Operação independente da rede Wi-Fi
 
+# Telecomandos
+
+| Telecomando | Função | Subsistema |
+| :---: | --- | --- |
+| 1 | Estabilizar | Controle de Atitude |
+| 2 | Determinar Azimute | Controle de Atitude |
+| 3 | Calibrar PID | Controle de Atitude |
+| 4 | Calibrar MPU | Controle de Atitude |
+| 5 | Calibrar LDR | Controle de Atitude |
+| 6 | Abrir Painel Solar | Controle de Atitude |
+| 7 | Fechar Painel Solar | Controle de Atitude |
+| 8 | Abrir Antena | Controle de Atitude |
+| 9 | Fechar Antena | Controle de Atitude |
+| 10 | Ligar todos os motores (Teste) | Controle de Atitude |
+| 11 | Desligar todos os motores (Teste) | Controle de Atitude |
+| 12 | Acionar resistor de controle térmico (Teste) | Suprimento de Energia |
+| 13 | Desligar resistor de controle térmico (Teste) | Suprimento de Energia |
+| 14 | Dados da bateria (Teste) | Suprimento de Energia |
+| 15 | Iniciar Missão | Missão |
+| 16 | Parar Missão | Missão |
+| 17 | PING (verificar se a missão está viva) | Missão |
+
+
 ---
 
 ## Recepção de Imagens
