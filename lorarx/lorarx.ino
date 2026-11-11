@@ -19,7 +19,11 @@ void loop()
                 lorarxPrintStats();
             } else if (!lorarxIsIdle()) {
                 Serial.println("Radio ocupado.");
-            } else {
+            } 
+            else if(comando == "15"){
+                lorarxSendCommand("OP,START,600");
+            }
+            else {
                 lorarxSendCommand(comando.c_str());
                 Serial.print("Comando enviado para OBC: ");
                 Serial.println(comando);

@@ -186,6 +186,59 @@ static bool ehMensagemOrange(const char* s)
     return false;
 }
 
+// Imprime uma unica linha da missao.
+// AC,seq,ts,icao24,lat,lon,alt,gs  ->  "missão: icao24, lat, lon, alt"
+// Qualquer outro tipo (EVT, ACK, ...) sai inalterado: "missão: <linha>"
+static void imprimirMissaoLinha(const char* linha)
+{
+    if (strncmp(linha, "AC,", 3) == 0) {
+        char tmp[128];
+        strncpy(tmp, linha, sizeof(tmp) - 1);
+        tmp[sizeof(tmp) - 1] = '\0';
+
+        // campos: 0=AC 1=seq 2=ts 3=icao24 4=lat 5=lon 6=alt 7=gs
+        char* campos[8];
+        int n = 0;
+        char* p = tmp;
+        while (p != nullptr && n < 8) {
+            campos[n++] = p;
+            char* v = strchr(p, ',');
+            if (v) { *v = '\0'; p = v + 1; }
+            else   { p = nullptr; }
+        }
+
+        if (n >= 7) {
+            Serial.print("missão: ");
+            Serial.print(campos[3]); Serial.print(", ");
+            Serial.print(campos[4]); Serial.print(", ");
+            Serial.print(campos[5]); Serial.print(", ");
+            Serial.println(campos[6]);
+            return;
+        }
+        // AC malformado: cai no print original abaixo
+    }
+
+    Serial.print("missão: ");
+    Serial.println(linha);
+}
+
+// Aceita varias linhas separadas por '\n' (lote de AC)
+static void imprimirMissao(char* texto)
+{
+    char* p = texto;
+    while (p != nullptr && *p) {
+        char* nl = strchr(p, '\n');
+        if (nl) *nl = '\0';
+        size_t l = strlen(p);
+        while (l > 0 && p[l - 1] == '\r') p[--l] = '\0';
+        if (l > 0) {
+            imprimirMissaoLinha(p);
+            loraStats.orangeCount++;
+        }
+        p = nl ? nl + 1 : nullptr;
+    }
+}
+
 static void handleString(const uint8_t* pl, uint16_t plSize)
 {
     char buf[BUFFER_SIZE];
@@ -208,26 +261,11 @@ static void handleString(const uint8_t* pl, uint16_t plSize)
     loraStats.stringCount++;
 
     // Mensagens do Orange Pi (missão ADS-B / clandestinas).
-    // Aceita o prefixo opcional "ORG," ou o tipo direto (AC, EVT, ACK, ...).
-    // Um pacote pode trazer varias linhas (lote de AC separado por '\n'):
-    // cada uma sai como uma linha "ORANGE:<mensagem>".
     char* orgIni = buf;
     if (strncmp(buf, "ORG,", 4) == 0) orgIni = buf + 4;
 
     if (orgIni != buf || ehMensagemOrange(orgIni)) {
-        char* p = orgIni;
-        while (p != nullptr && *p) {
-            char* nl = strchr(p, '\n');
-            if (nl) *nl = '\0';
-            size_t l = strlen(p);
-            while (l > 0 && p[l - 1] == '\r') p[--l] = '\0';
-            if (l > 0) {
-                Serial.print("ORANGE:");
-                Serial.println(p);
-                loraStats.orangeCount++;
-            }
-            p = nl ? nl + 1 : nullptr;
-        }
+        imprimirMissao(orgIni);
         return;
     }
 
@@ -236,7 +274,6 @@ static void handleString(const uint8_t* pl, uint16_t plSize)
     // Prefixos opcionais de origem
     if (buf[0] == 'C' && buf[1] == ':') {
         char* dados = buf + 2;
-        // Se vier "C:3:...", pula o "3:" também
         if (dados[0] == '3' && dados[1] == ':') dados += 2;
         Serial.print("Controle de Atitude: ");
         Serial.println(dados);
@@ -265,7 +302,7 @@ static void handleString(const uint8_t* pl, uint16_t plSize)
 
     int cmd = atoi(linha);
 
-        if (cmd == 1) {
+    if (cmd == 1) {
         // Suprimento: "1:tempBat1:tempBat2:tensao:corrente"
         float v[4];
         int nv = 0;
@@ -285,12 +322,10 @@ static void handleString(const uint8_t* pl, uint16_t plSize)
         bateria.tensao       = v[2];
         bateria.corrente     = v[3];
         bateria.valido       = true;
-        // Sem print aqui: os valores saem na proxima linha do AbaTrack (handleSensor)
     }
     else if (cmd == 2) {
-        // Missão
-        Serial.print("Missão");
-        Serial.println(resto);
+        // Missão: "2:AC,seq,ts,icao24,lat,lon,alt,gs"
+        imprimirMissao(resto);
     }
     else if (cmd == 3) {
         // Controle de atitude
