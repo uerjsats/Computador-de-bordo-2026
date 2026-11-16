@@ -14,7 +14,7 @@ static uint8_t myAddress;
 static uint8_t destAddress;
 
 static bool idle = true;
-static unsigned long txInterval = 9;
+static unsigned long txInterval = 300;
 static unsigned long lastTxTime = 0;
 
 static uint8_t rxBuffer[BUFFER_SIZE];
