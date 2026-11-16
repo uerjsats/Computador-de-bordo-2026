@@ -23,6 +23,13 @@ void loop()
             else if(comando == "15"){
                 lorarxSendCommand("OP,START,600");
             }
+            else if (comando == "16"){
+                lorarxSendCommand("OP,STOP");
+            }
+            else if (comando == "17")
+            {
+                lorarxSendCommand("OP,PING");
+            }
             else {
                 lorarxSendCommand(comando.c_str());
                 Serial.print("Comando enviado para OBC: ");
