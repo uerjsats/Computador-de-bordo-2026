@@ -2,7 +2,7 @@
 
 #define RF_FREQUENCY          915.0
 #define TX_OUTPUT_POWER       20
-#define LORA_BANDWIDTH        125.0
+#define LORA_BANDWIDTH        500.0
 #define LORA_SPREADING_FACTOR 7
 #define LORA_CODINGRATE       5
 
@@ -14,7 +14,7 @@ static uint8_t myAddress;
 static uint8_t destAddress;
 
 static bool idle = true;
-static unsigned long txInterval = 300;
+static unsigned long txInterval = 9;
 static unsigned long lastTxTime = 0;
 
 static uint8_t rxBuffer[BUFFER_SIZE];
@@ -264,8 +264,22 @@ static void handleString(const uint8_t* pl, uint16_t plSize)
     char* orgIni = buf;
     if (strncmp(buf, "ORG,", 4) == 0) orgIni = buf + 4;
 
-    if (orgIni != buf || ehMensagemOrange(orgIni)) {
-        imprimirMissao(orgIni);
+        if (orgIni != buf || ehMensagemOrange(orgIni)) {
+        char* p = orgIni;
+        while (p != nullptr && *p) {
+            char* nl = strchr(p, '\n');
+            if (nl) *nl = '\0';
+            size_t l = strlen(p);
+            while (l > 0 && p[l - 1] == '\r') p[--l] = '\0';
+            if (l > 0) {
+                Serial.print("ORANGE:");
+                Serial.println(p);
+                // so a posicao da aeronave tambem sai no formato do mapa
+                if (strncmp(p, "AC,", 3) == 0) imprimirMissaoLinha(p);
+                loraStats.orangeCount++;
+            }
+            p = nl ? nl + 1 : nullptr;
+        }
         return;
     }
 
