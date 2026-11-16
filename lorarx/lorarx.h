@@ -61,6 +61,9 @@ struct sensorsData {
 
     // 11. Yaw (graus × 100)
     int16_t yaw;
+
+    // 12. Angulo LDR
+    int16_t anguloLDR;
     
     // 13. Temperatura da bateria 1 (°C × 100)
     int16_t temperaturaBateria1;
