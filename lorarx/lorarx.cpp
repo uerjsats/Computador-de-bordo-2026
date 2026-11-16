@@ -29,8 +29,10 @@ typedef struct {
     float corrente;     // A
     bool  valido;
 } BateriaData;
+ControleData;
 
 static BateriaData bateria {0, 0, 0, 0, false };
+static ControleData controle {0, false };
 
 static uint8_t  imageBuffer[MAX_IMAGE_SIZE];
 static uint32_t imageWritePos        = 0;
@@ -189,7 +191,7 @@ static bool ehMensagemOrange(const char* s)
 }
 
 // Imprime uma unica linha da missao.
-// AC,seq,ts,icao24,lat,lon,alt,gs  ->  "missão: icao24, lat, lon, alt"
+// AC,seq,ts,icao24,lat,lon,alt,gs  ->  "missão: icao24, lat, lon, alt,rumo"
 // Qualquer outro tipo (EVT, ACK, ...) sai inalterado: "missão: <linha>"
 static void imprimirMissaoLinha(const char* linha)
 {
@@ -198,8 +200,8 @@ static void imprimirMissaoLinha(const char* linha)
         strncpy(tmp, linha, sizeof(tmp) - 1);
         tmp[sizeof(tmp) - 1] = '\0';
 
-        // campos: 0=AC 1=seq 2=ts 3=icao24 4=lat 5=lon 6=alt 7=gs
-        char* campos[8];
+        // campos: 0=AC 1=seq 2=ts 3=icao24 4=lat 5=lon 6=alt 7=gs 8=rumo
+        char* campos[9];
         int n = 0;
         char* p = tmp;
         while (p != nullptr && n < 8) {
@@ -214,7 +216,8 @@ static void imprimirMissaoLinha(const char* linha)
             Serial.print(campos[3]); Serial.print(", ");
             Serial.print(campos[4]); Serial.print(", ");
             Serial.print(campos[5]); Serial.print(", ");
-            Serial.println(campos[6]);
+            Serial.print(campos[6]); Serial.print(", ");
+            Serial.println(campos[7]);
             return;
         }
         // AC malformado: cai no print original abaixo
@@ -340,11 +343,12 @@ static void handleString(const uint8_t* pl, uint16_t plSize)
         bateria.valido       = true;
     }
     else if (cmd == 2) {
-        // Missão: "2:AC,seq,ts,icao24,lat,lon,alt,gs"
+        // Missão: "2:AC,seq,ts,icao24,lat,lon,alt,gs,rumo"
         imprimirMissao(resto);
     }
     else if (cmd == 3) {
         // Controle de atitude
+         float v[1];
         int nv = 0;
         char* tok = strtok(resto, ":");
         while (tok != nullptr && nv < 4) {
@@ -356,7 +360,7 @@ static void handleString(const uint8_t* pl, uint16_t plSize)
             Serial.println(resto);
             return;
         }
-        dados.anguloLDR = v[0];
+        controle.anguloLDR = v[0];
     }
     else {
         // Comando numerico desconhecido: mostra a linha original
