@@ -2,7 +2,7 @@
 
 #define RF_FREQUENCY          915.0
 #define TX_OUTPUT_POWER       20
-#define LORA_BANDWIDTH        500.0
+#define LORA_BANDWIDTH        125.0
 #define LORA_SPREADING_FACTOR 7
 #define LORA_CODINGRATE       5
 
