@@ -29,7 +29,11 @@ typedef struct {
     float corrente;     // A
     bool  valido;
 } BateriaData;
-ControleData;
+
+typedef struct {
+    float anguloLDR; // °
+    bool  valido;
+} ControleData;
 
 static BateriaData bateria {0, 0, 0, 0, false };
 static ControleData controle {0, false };
