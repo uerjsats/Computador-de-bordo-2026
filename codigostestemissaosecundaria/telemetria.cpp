@@ -6,9 +6,11 @@
 FilaStr<16, 120> prioFila;
 FilaStr<24, 96> acFila;
 FilaStr<4, SUP_LINHA_MAX> supFila;
+FilaStr<8, CTRL_LINHA_MAX> ctrlFila;
 
 // Acumulador de linha parcial (nao bloqueante)
 static String accS;     // suprimento de energia
+static String accC;     // controle de atitude
 
 // UART0 = Serial (USB). NAO usar HardwareSerial(0) para outra coisa.
 HardwareSerial orangeSerial(1);     // UART1 <-> Orange Pi        (pinos 6/7)
@@ -688,6 +690,29 @@ static void ctrlInit()
     Serial.printf("[CTRL] pronto. RX=%d TX=%d baud=%d\n", CTRL_RX_PIN, CTRL_TX_PIN, CTRL_BAUD);
 }
 
+// Le o que o Nano mandar (sem bloquear) e monta linhas. O Nano manda "3:<angulo>"
+// a cada ~500 ms no modo shift e, se DEBUG_UART_OBC estiver ligado la, "3:DBG:...".
+static void ctrlTick()
+{
+    while (controleSerial.available()) {
+        char c = (char)controleSerial.read();
+        if (c == '\n') {
+            accC.trim();
+            if (accC.length()) {
+                bool ehDbg = accC.startsWith("3:DBG:");
+                if (!ehDbg || CTRL_ENCAMINHAR_DBG) {
+                    Serial.print("[CTRL]: ");
+                    Serial.println(accC);
+                    ctrlFila.push(accC.c_str());
+                }
+            }
+            accC = "";
+        } else if (c != '\r' && accC.length() < CTRL_LINHA_MAX - 1) {
+            accC += c;
+        }
+    }
+}
+
 // ----- Despacho LoRa -----
 static void opDespacharPrio(unsigned long now)
 {
@@ -708,6 +733,17 @@ static void supDespachar(unsigned long now)
         Serial.print("[TX->BASE] ");
         Serial.println(supFila.em(0));
         supFila.pop();
+    }
+}
+
+static void ctrlDespachar(unsigned long now)
+{
+    if (!idle || (now - lastTxTime) < txInterval) return;
+    if (ctrlFila.vazia()) return;
+    if (telemetriaSendString(ctrlFila.em(0))) {
+        Serial.print("[TX->BASE] ");
+        Serial.println(ctrlFila.em(0));
+        ctrlFila.pop();
     }
 }
 
@@ -769,15 +805,8 @@ static void callbackTelemetria(uint8_t* data, uint16_t size)
     Serial.print("[TX->CTRL] ");
     Serial.println(cmd);
 
-    if(controleSerial.available())
-    {
-        // Le a resposta e envia a string inteira pra base
-        String resposta = controleSerial.readStringUntil('\n');
-        resposta.trim();
-        Serial.print("[CTRL]: ");
-        Serial.println(resposta);
-        telemetriaSendString(resposta);
-    }   
+    // A resposta/telemetria do controle NAO e mais lida aqui: a ctrlTick() le a
+    // Serial continuamente e a ctrlDespachar() encaminha para a base.
 }
 
 bool telemetriaSendString(const char* texto)
@@ -844,6 +873,9 @@ void taskTelemetria(void *parameter)
         // Suprimento de energia: pede e le a resposta (nao bloqueia).
         supTick(now);
 
+        // Controle de atitude: le o que o Nano mandar (nao bloqueia).
+        ctrlTick();
+
         // 1) Guarda o dado de sensores mais recente
         if (xQueueReceive(filaTelemetria, &dados, 0) == pdPASS)
         {
@@ -896,6 +928,10 @@ void taskTelemetria(void *parameter)
         else if (!supFila.vazia())
         {
             supDespachar(now);
+        }
+        else if (!ctrlFila.vazia())
+        {
+            ctrlDespachar(now);
         }
         else
         {
