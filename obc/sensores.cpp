@@ -16,8 +16,8 @@ extern sensorsData dados;
 //Definição GPS
 TinyGPSPlus gps; 
 HardwareSerial GPSSerial(1); 
-#define GPS_RX 45
-#define GPS_TX 46
+#define GPS_RX 38
+#define GPS_TX 39
 
 //iniciliza sensor 
 void gpsInit() 

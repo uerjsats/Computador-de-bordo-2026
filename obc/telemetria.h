@@ -44,8 +44,8 @@
 #define SUP_INTERVALO_MS    2000UL    // pede o INA a cada 2 s
 #define SUP_LINHA_MAX       128
 
-#define OP_SERIAL_RX_PIN   6
-#define OP_SERIAL_TX_PIN   7
+#define OP_SERIAL_RX_PIN   7
+#define OP_SERIAL_TX_PIN   6
 #define OP_BAUD            115200   // tem que ser igual a Config.BAUD do adsb_cubesat.py
 
 // --- Protocolo ---
@@ -135,7 +135,12 @@ static unsigned long opUltimoStatus = 0;
 static uint32_t      opAcRx = 0, opLinhasOk = 0, opLinhasInvalidas = 0;
 
 // Consulta QRY em andamento (uma por vez)
-struct OpQry { double lat; double lon; char icao[8]; };
+struct OpQry {
+    double lat;
+    double lon;
+    char   icao[8];      // mantenha o tamanho que ja estava
+    int    photoIndex;   // <- novo
+};
 static QueueHandle_t filaQry = nullptr;
 static OpQry         qryAtual;
 static bool          qryAtiva = false;
@@ -276,7 +281,7 @@ bool telemetriaSendString(const String& texto);
 //   VEREDITO,CLANDESTINA,<lat>,<lon>
 //   VEREDITO,INDETERMINADO,<lat>,<lon>     (Orange nao respondeu)
 // Retorna false se a fila esta cheia ou a telemetria ainda nao iniciou.
-bool opConsultarAeronave(double lat, double lon, const char* icao24 = nullptr);
+bool opConsultarAeronave(double lat, double lon, const char* icao24 = nullptr, int photoIndex = -1);
 
 // Executa um comando "de solo" (sem o prefixo "OP,"). Ex.: "START,60", "STOP",
 // "QRY,-22.88,-43.30", "AUTO,0", "ESTADO". Chamado pelo callback LoRa e pelo console USB.

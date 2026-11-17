@@ -7,6 +7,14 @@ FilaStr<16, 120> prioFila;
 FilaStr<24, 96> acFila;
 FilaStr<4, SUP_LINHA_MAX> supFila;
 
+static char ctrlAcc[96];
+static uint8_t ctrlLen = 0;
+
+static char ctrlUltimoAng[24];         // ultimo angulo "3:<numero>" (so o mais recente)
+static bool ctrlAngNovo = false;
+static unsigned long ctrlUltimoEnvioAng = 0;
+#define CTRL_ANG_INTERVALO_MS 1000UL   // no maximo 1 angulo por segundo no LoRa
+
 // Acumulador de linha parcial (nao bloqueante)
 static String accS;     // suprimento de energia
 
@@ -485,12 +493,13 @@ static void opLerOrange()
     }
 }
 
-bool opConsultarAeronave(double lat, double lon, const char* icao24)
+bool opConsultarAeronave(double lat, double lon, const char* icao24, int photoIndex)
 {
     if (!filaQry) return false;
     OpQry q;
     q.lat = lat;
     q.lon = lon;
+    q.photoIndex = photoIndex;
     q.icao[0] = 0;
     if (icao24) {
         strncpy(q.icao, icao24, sizeof(q.icao) - 1);
@@ -763,7 +772,7 @@ static void callbackTelemetria(uint8_t* data, uint16_t size)
     Serial.print("[TX->CTRL] ");
     Serial.println(cmd);
 
-    if(controleSerial.available())
+    /*if(controleSerial.available())
     {
         // Le a resposta e envia a string inteira pra base
         String resposta = controleSerial.readStringUntil('\n');
@@ -771,7 +780,54 @@ static void callbackTelemetria(uint8_t* data, uint16_t size)
         Serial.print("[CTRL]: ");
         Serial.println(resposta);
         telemetriaSendString(resposta);
-    }   
+    }*/   
+}
+
+static bool ehNumero(const char* s) {
+    char* fim;
+    strtod(s, &fim);
+    if (fim == s) return false;
+    while (*fim == ' ') fim++;
+    return *fim == '\0';
+}
+
+static void ctrlTratarLinha(char* linha) {
+    Serial.print("[CTRL]: ");
+    Serial.println(linha);
+
+    // Angulo numerico: guarda so o mais recente (nao enche a fila)
+    if (linha[0] == '3' && linha[1] == ':' && ehNumero(linha + 2)) {
+        strncpy(ctrlUltimoAng, linha, sizeof(ctrlUltimoAng) - 1);
+        ctrlUltimoAng[sizeof(ctrlUltimoAng) - 1] = 0;
+        ctrlAngNovo = true;
+        return;
+    }
+    // Resposta de comando (texto): vai com prioridade, sem se perder
+    prioFila.push(linha);
+}
+
+static void ctrlTick() {
+    int guarda = 0;
+    while (controleSerial.available() && guarda++ < 256) {
+        char c = (char)controleSerial.read();
+        if (c == '\n' || c == '\r') {
+            if (ctrlLen) { ctrlAcc[ctrlLen] = 0; ctrlTratarLinha(ctrlAcc); ctrlLen = 0; }
+        } else if (ctrlLen < sizeof(ctrlAcc) - 1) {
+            ctrlAcc[ctrlLen++] = c;
+        } else {
+            ctrlLen = 0;   // estouro: descarta
+        }
+    }
+}
+
+static void ctrlDespacharAng(unsigned long now) {
+    if (!ctrlAngNovo || (now - ctrlUltimoEnvioAng) < CTRL_ANG_INTERVALO_MS) return;
+    if (telemetriaSendString(ctrlUltimoAng)) {
+        Serial.print("[TX->BASE] ");
+        Serial.println(ctrlUltimoAng);
+        ctrlAngNovo = false;
+        ctrlUltimoEnvioAng = now;
+    }
 }
 
 bool telemetriaSendString(const char* texto)
@@ -838,6 +894,8 @@ void taskTelemetria(void *parameter)
         // Suprimento de energia: pede e le a resposta (nao bloqueia).
         supTick(now);
 
+        ctrlTick();
+
         // 1) Guarda o dado de sensores mais recente
         if (xQueueReceive(filaTelemetria, &dados, 0) == pdPASS)
         {
@@ -891,6 +949,13 @@ void taskTelemetria(void *parameter)
         {
             supDespachar(now);
         }
+
+        else if (ctrlAngNovo &&             // <- novo, depois do sensor
+                 (now - ctrlUltimoEnvioAng) >= CTRL_ANG_INTERVALO_MS)
+        {
+            ctrlDespacharAng(now);
+        }
+
         else
         {
             opDespacharAC(now);
