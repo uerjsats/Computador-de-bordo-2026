@@ -22,6 +22,11 @@ static uint8_t txBuffer[BUFFER_SIZE];
 
 LoraRxStats loraStats;
 
+// ----- Controle de atitude (ADCS) -----
+// Ultimo angulo LDR recebido: como texto e ja convertido.
+String anguloLDR = "0";
+float anguloLDRFloat = 0.0f;
+
 typedef struct {
     float temperatura1; // C
     float temperatura2; // C
@@ -141,7 +146,6 @@ static void handleSensor(const uint8_t* pl, uint16_t plSize, uint16_t totalSize)
     float roll_deg    = dados.roll / 100.0f;
     float pitch_deg   = dados.pitch / 100.0f;
     float yaw_deg     = dados.yaw / 100.0f;
-    float anguloLDR = controle.valido ? controle.anguloLDR : dados.anguloLDR / 100.0f;
 
     float tempBat1 = bateria.valido ? bateria.temperatura1 : dados.temperaturaBateria1 / 100.0f;
     float tempBat2 = bateria.valido ? bateria.temperatura2 : dados.temperaturaBateria2 / 100.0f;
@@ -159,7 +163,7 @@ static void handleSensor(const uint8_t* pl, uint16_t plSize, uint16_t totalSize)
     Serial.print(roll_deg, 2); Serial.print(":");
     Serial.print(pitch_deg, 2); Serial.print(":");
     Serial.print(yaw_deg, 2); Serial.print(":");
-    Serial.print(anguloLDR, 2); Serial.print(":");
+    Serial.print(anguloLDRFloat, 2); Serial.print(":");
     Serial.print(tempBat1, 2); Serial.print(":");
     Serial.print(tempBat2, 2); Serial.print(":");
     Serial.print(tensao, 3); Serial.print(":");
@@ -248,6 +252,43 @@ static void imprimirMissao(char* texto)
     }
 }
 
+// ===== Controle de atitude (ADCS) =====
+
+// Retorna true se a string inteira for um numero (ex: "12.5", "-3", " 45.0\r\n")
+static bool ehFloat(const char* s, float* out = nullptr)
+{
+    char* fim;
+    double v = strtod(s, &fim);
+    if (fim == s) return false;                     // nao converteu nada
+    while (*fim == ' ' || *fim == '\r' || *fim == '\n' || *fim == '\t') fim++;
+    if (*fim != '\0') return false;                 // sobrou texto -> nao e numero
+    if (out) *out = (float)v;
+    return true;
+}
+
+// Trata uma linha do controle de atitude.
+// Aceita "3:<x>", "C:3:<x>" e "C:<x>" (o prefixo "C:" ja vem removido), com ou sem espacos.
+//   numero -> atualiza o angulo LDR (entra na linha de telemetria)
+//   texto  -> resposta de comando, impressa como Controle de Atitude: "..."
+static void processarControle(char* dados)
+{
+    while (*dados == ' ') dados++;
+    if (dados[0] == '3' && dados[1] == ':') dados += 2;
+    while (*dados == ' ') dados++;
+
+    float valor;
+    if (ehFloat(dados, &valor)) {
+        anguloLDR          = dados;
+        anguloLDRFloat     = valor;
+        controle.anguloLDR = valor;
+        controle.valido    = true;
+    } else {
+        Serial.print("Controle de Atitude: \"");
+        Serial.print(dados);
+        Serial.println("\"");
+    }
+}
+
 static void handleString(const uint8_t* pl, uint16_t plSize)
 {
     char buf[BUFFER_SIZE];
@@ -294,14 +335,9 @@ static void handleString(const uint8_t* pl, uint16_t plSize)
 
     char* linha = buf;
 
-    // Prefixos opcionais de origem
-    if (buf[0] == 'C' && buf[1] == ':') {
-        char* dados = buf + 2;
-        if (dados[0] == '3' && dados[1] == ':') dados += 2;
-        Serial.print("Controle de Atitude: ");
-        Serial.println(dados);
-        return;
-    }
+    // Controle de atitude: "C:..." ou "3:..."
+    if (buf[0] == 'C' && buf[1] == ':') { processarControle(buf + 2); return; }
+    if (buf[0] == '3' && buf[1] == ':') { processarControle(buf);     return; }
 
     if (buf[0] == 'S' && buf[1] == ':') {
         linha = buf + 2;
@@ -349,23 +385,6 @@ static void handleString(const uint8_t* pl, uint16_t plSize)
     else if (cmd == 2) {
         // Missão: "2:AC,seq,ts,icao24,lat,lon,alt,gs,rumo"
         imprimirMissao(resto);
-    }
-    else if (cmd == 3) {
-        // Controle de atitude "3:anguloLDR"
-         float v[1];
-        int nv = 0;
-        char* tok = strtok(resto, ":");adicion
-        while (tok != nullptr && nv < 1) {
-            v[nv++] = strtof(tok, nullptr);
-            tok = strtok(nullptr, ":");
-        }
-        if (nv < 1) {
-            Serial.print("CONTROLE_ATITUDE_INVALIDO:");
-            Serial.println(resto);
-            return;
-        }
-        controle.anguloLDR = v[0];
-        controle.valido = true;
     }
     else {
         // Comando numerico desconhecido: mostra a linha original
