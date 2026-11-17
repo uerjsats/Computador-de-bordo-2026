@@ -23,7 +23,7 @@ uint32_t currentTotalIndex = 0;
 float currentMissionTime = 0.0;
 
 //Dados do Wifi da Missão
-const char* ssid = "VANTsat_AP";
+const char* ssid = "AMARAL_I";
 const char* password = "uerjsats123";
 const char* serverIP = "192.168.4.1";
 const uint16_t port = 8888;
