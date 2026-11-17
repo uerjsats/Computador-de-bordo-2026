@@ -146,24 +146,3 @@ OP,QRY,-22.88,-43.30         -> VEREDITO,NAO_CLANDESTINA,7788FF,TAP0803,...
 Das 5 aeronaves simuladas pela CAM, só `7788FF` e `33CC99` constam no banco do
 Orange (`autorizadas`). As outras três (`A1B2C3`, `D4E5F6`, `11AACC`) devem
 resultar em foto enviada à base.
-
-## Limitações e pendências conhecidas
-
-Não fazem parte desta mudança, mas afetam a missão:
-
-- **CAM sem limite de taxa:** a cada 500 ms com avião à vista ela salva uma
-  foto nova e sorteia outra aeronave. O OBC guarda até 4 detecções pendentes e
-  descarta as que chegarem com a fila cheia.
-- **CAM manda o ADS-B mesmo se a gravação no SD falhar**, com `photo_index`
-  antigo.
-- **Comando `R`** da primeira conexão não existe na CAM e provoca um
-  `resetRadio()` desnecessário no início.
-- **Base (`lorarx`):** a impressão da linha `AC` (`imprimirMissaoLinha`) lê só
-  8 campos e não imprime o rumo (`track_deg`).
-- **Missão primária:** `OP_AUTO_START` é `0`, então os `AC` do Orange só chegam
-  após `OP,START,600` (ou `OP,AUTO,1`) enviado pela base.
-- **Controle de atitude / LDR:** o tratamento do `cmd == 3` em `lorarx.cpp`
-  precisa de revisão (tamanho do vetor `v`, validação `nv`, uso de
-  `controle.valido`), e o OBC ainda não preenche `anguloLDR` no pacote de
-  sensores.
-- A cópia em `libs/comunicação/networkManager/` não foi atualizada.
