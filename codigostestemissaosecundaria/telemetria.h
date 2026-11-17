@@ -91,6 +91,8 @@
 #define CTRL_RX_PIN       33
 #define CTRL_TX_PIN       34
 #define CTRL_TIMEOUT_MS   1000  // tempo maximo esperando a resposta do controle
+#define CTRL_LINHA_MAX      64  // tamanho maximo de uma linha vinda do controle
+#define CTRL_ENCAMINHAR_DBG  0  // 1 = manda tambem as linhas "3:DBG:..." do Nano para a base
 
 #define RF_FREQUENCY 915.0
 #define TX_OUTPUT_POWER 20
@@ -122,6 +124,7 @@ struct FilaStr {
 extern FilaStr<16, 120> prioFila;
 extern FilaStr<24, 96> acFila;
 extern FilaStr<4, SUP_LINHA_MAX> supFila;
+extern FilaStr<8, CTRL_LINHA_MAX> ctrlFila;
 
 enum OpEstado : uint8_t { OP_SEM_CONTATO = 0, OP_VIVO = 1, OP_EXECUTANDO = 2 };
 static const char* const OP_NOMES[] = {"SEM_CONTATO", "VIVO", "EXECUTANDO"};
