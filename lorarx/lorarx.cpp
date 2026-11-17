@@ -351,10 +351,10 @@ static void handleString(const uint8_t* pl, uint16_t plSize)
         imprimirMissao(resto);
     }
     else if (cmd == 3) {
-        // Controle de atitude
+        // Controle de atitude "3:anguloLDR"
          float v[1];
         int nv = 0;
-        char* tok = strtok(resto, ":");
+        char* tok = strtok(resto, ":");adicion
         while (tok != nullptr && nv < 1) {
             v[nv++] = strtof(tok, nullptr);
             tok = strtok(nullptr, ":");
