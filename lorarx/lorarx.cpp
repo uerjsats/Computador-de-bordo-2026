@@ -141,7 +141,7 @@ static void handleSensor(const uint8_t* pl, uint16_t plSize, uint16_t totalSize)
     float roll_deg    = dados.roll / 100.0f;
     float pitch_deg   = dados.pitch / 100.0f;
     float yaw_deg     = dados.yaw / 100.0f;
-    float anguloLDR   = dados.anguloLDR / 100.0f;
+    float anguloLDR = controle.valido ? controle.anguloLDR : dados.anguloLDR / 100.0f;
 
     float tempBat1 = bateria.valido ? bateria.temperatura1 : dados.temperaturaBateria1 / 100.0f;
     float tempBat2 = bateria.valido ? bateria.temperatura2 : dados.temperaturaBateria2 / 100.0f;
@@ -355,16 +355,17 @@ static void handleString(const uint8_t* pl, uint16_t plSize)
          float v[1];
         int nv = 0;
         char* tok = strtok(resto, ":");
-        while (tok != nullptr && nv < 4) {
+        while (tok != nullptr && nv < 1) {
             v[nv++] = strtof(tok, nullptr);
             tok = strtok(nullptr, ":");
         }
-        if (nv < 4) {
+        if (nv < 1) {
             Serial.print("CONTROLE_ATITUDE_INVALIDO:");
             Serial.println(resto);
             return;
         }
         controle.anguloLDR = v[0];
+        controle.valido = true;
     }
     else {
         // Comando numerico desconhecido: mostra a linha original
