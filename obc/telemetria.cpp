@@ -25,6 +25,14 @@ SoftwareSerial supSerial;           // serial simulada <-> Suprimento (pinos 19/
 
 static unsigned long janelaRx = 0;   // marco da ultima atividade de radio
 
+// --- Console de teste (Monitor Serial do OBC) ---
+static sensorsData   tstSensor;                   // ultimo pacote de sensores
+static bool          tstSensorOk = false;
+static char          tstSup[SUP_LINHA_MAX] = "";  // ultima linha do suprimento
+static bool          tstMonitor = false;          // 'monitor' liga/desliga o painel automatico
+static unsigned long tstUltimoPainel = 0;
+#define TST_PAINEL_MS 3000UL
+
 extern QueueHandle_t filaTelemetria;
 
 static SX1262 radio = new Module(8, 14, 12, 13);
@@ -332,6 +340,15 @@ static void opVeredito(const char* tipo, const char* extra)
     prioFila.push(b);
 }
 
+// Resposta imediata de comando OP: se o comando foi digitado no OBC,
+// aparece so no Monitor Serial; se veio da base, vai pela LoRa (como antes).
+static bool cmdLocal = false;
+static void opResponder(const char* s)
+{
+    if (cmdLocal) { Serial.print("[RESPOSTA] "); Serial.println(s); }
+    else          prioFila.push(s);
+}
+
 static void opPublicarEstado()
 {
     char b[120];
@@ -340,7 +357,7 @@ static void opPublicarEstado()
              (unsigned long)opAcRx, (unsigned long)acFila.perdidos,
              (unsigned long)opLinhasOk, (unsigned long)opLinhasInvalidas);
     OPLOG("[OP] %s\n", b);
-    prioFila.push(b);
+    opResponder(b);
 }
 
 // Trata uma linha completa vinda do Orange ("2:TIPO,campos[*XX]").
@@ -516,7 +533,7 @@ void opComandoSolo(const String& cmdIn)
     c.toUpperCase();
     c.replace(" ", "");                 // tolera "OP, START, 60"
     if (c.length() == 0 || c.length() > OP_LINHA_MAX - 10) {
-        prioFila.push("NAK,OP,VAZIO_OU_LONGO");
+        opResponder("NAK,OP,VAZIO_OU_LONGO");
         return;
     }
 
@@ -529,12 +546,12 @@ void opComandoSolo(const String& cmdIn)
             opAutoAtivo = true;
             opMissaoConcluida = false;
             opProxTentativa = millis();
-            prioFila.push("ACK,OP,AUTO,1");
+            opResponder("ACK,OP,AUTO,1");
         } else if (arg == "0") {
             opAutoAtivo = false;
-            prioFila.push("ACK,OP,AUTO,0");
+            opResponder("ACK,OP,AUTO,0");
         } else {
-            prioFila.push("NAK,OP,AUTO,ARG");
+            opResponder("NAK,OP,AUTO,ARG");
         }
         return;
     }
@@ -543,14 +560,14 @@ void opComandoSolo(const String& cmdIn)
     // Missao secundaria: passa pela fila para gerar o VEREDITO ---
     if (nome == "QRY") {
         int p1 = arg.indexOf(',');
-        if (p1 < 0) { prioFila.push("NAK,OP,QRY,ARG"); return; }
+        if (p1 < 0) { opResponder("NAK,OP,QRY,ARG"); return; }
         int p2 = arg.indexOf(',', p1 + 1);
         double lat = arg.substring(0, p1).toDouble();
         double lon = (p2 < 0 ? arg.substring(p1 + 1) : arg.substring(p1 + 1, p2)).toDouble();
         String icao = (p2 < 0) ? String("") : arg.substring(p2 + 1);
-        if (fabs(lat) > 90.0 || fabs(lon) > 180.0) { prioFila.push("NAK,OP,QRY,FAIXA"); return; }
+        if (fabs(lat) > 90.0 || fabs(lon) > 180.0) { opResponder("NAK,OP,QRY,FAIXA"); return; }
         if (!opConsultarAeronave(lat, lon, icao.length() ? icao.c_str() : nullptr))
-            prioFila.push("NAK,OP,QRY,FILA_CHEIA");
+            opResponder("NAK,OP,QRY,FILA_CHEIA");
         return;
     }
 
@@ -563,8 +580,10 @@ void opComandoSolo(const String& cmdIn)
         return;
     }
 
-    prioFila.push("NAK,OP,CMD_DESCONHECIDO");
+    opResponder("NAK,OP,CMD_DESCONHECIDO");
 }
+
+static void consoleUSB(const String& linha);   // console de teste (definido mais abaixo)
 
 #if OP_CONSOLE_USB
 static String usbAcc;
@@ -577,10 +596,7 @@ static void opLerUSB()
                 String l = usbAcc;
                 usbAcc = "";
                 l.trim();
-                String u = l;
-                u.toUpperCase();
-                if (u.startsWith("OP,")) opComandoSolo(l.substring(3));
-                else Serial.println("[OP] use: OP,<comando>  ex.: OP,START,60");
+                if (l.length()) consoleUSB(l);
             }
         } else if (usbAcc.length() < 120) {
             usbAcc += c;
@@ -675,6 +691,7 @@ static void supTick(unsigned long now)
                 Serial.print("[SUP]: ");
                 Serial.println(accS);
                 supFila.push(accS.c_str());
+                strncpy(tstSup, accS.c_str(), sizeof(tstSup) - 1);   // painel de teste
             }
             accS = "";
         } else if (c != '\r' && accS.length() < SUP_LINHA_MAX - 1) {
@@ -741,6 +758,8 @@ static void opDespacharAC(unsigned long now)
     }
 }
 
+static void executarComando(const String& cmd);
+
 static void callbackTelemetria(uint8_t* data, uint16_t size)
 {
     uint8_t type = packetType(data);
@@ -759,6 +778,12 @@ static void callbackTelemetria(uint8_t* data, uint16_t size)
     Serial.print("[RX<-BASE] ");
     Serial.println(cmd);
 
+    executarComando(cmd);
+}
+
+// Mesmo caminho para comando vindo da base (LoRa) e do Monitor Serial do OBC.
+static void executarComando(const String& cmd)
+{
     // "OP,<comando>" => missao do Orange Pi. Qualquer outra coisa segue para a placa de controle.
     String up = cmd;
     up.toUpperCase();
@@ -792,8 +817,8 @@ static bool ehNumero(const char* s) {
 }
 
 static void ctrlTratarLinha(char* linha) {
-    Serial.print("[CTRL]: ");
-    Serial.println(linha);
+    // Serial.print("[CTRL]: ");      // print automatico da resposta da escrava (desativado)
+    // Serial.println(linha);
 
     // Angulo numerico: guarda so o mais recente (nao enche a fila)
     if (linha[0] == '3' && linha[1] == ':' && ehNumero(linha + 2)) {
@@ -828,6 +853,126 @@ static void ctrlDespacharAng(unsigned long now) {
         ctrlAngNovo = false;
         ctrlUltimoEnvioAng = now;
     }
+}
+
+// =====================================================================
+//  Console de teste do OBC (Monitor Serial, 115200)
+//  So roda dentro da taskTelemetria e nao bloqueia: a LoRa segue normal.
+// =====================================================================
+static void imprimirAjuda()
+{
+    Serial.println();
+    Serial.println("================== MENU DE TESTE - OBC ==================");
+    Serial.println("Comandos digitados aqui vao direto para as placas,");
+    Serial.println("sem passar pela base. A resposta aparece neste monitor.");
+    Serial.println();
+    Serial.println("--- CONSOLE ---");
+    Serial.println(" ajuda              este menu");
+    Serial.println(" dados              painel com os dados atuais");
+    Serial.println(" monitor            liga/desliga o painel automatico (3 s)");
+    Serial.println();
+    Serial.println("--- ORANGE PI (missao ADS-B) ---");
+    Serial.println(" 15                 OP,START,600  (inicia missao 10 min)");
+    Serial.println(" 16                 OP,STOP");
+    Serial.println(" 17                 OP,PING");
+    Serial.println(" OP,PING            testa se o Orange responde");
+    Serial.println(" OP,START,<seg>     inicia missao (0 = sem limite)");
+    Serial.println(" OP,STOP            para a missao");
+    Serial.println(" OP,STATUS          pede o estado ao Orange");
+    Serial.println(" OP,ESTADO          estado da missao no OBC");
+    Serial.println(" OP,AUTO,1 | 0      liga/desliga missao automatica");
+    Serial.println(" OP,QRY,<lat>,<lon>[,icao]  consulta aeronave (veredito)");
+    Serial.println(" OP,TIME,<epoch>    acerta o relogio do Orange");
+    Serial.println(" OP,MODE,<modo>     muda o modo do Orange");
+    Serial.println(" OP,DUMP            pede despejo de dados ao Orange");
+    Serial.println();
+    Serial.println("--- SUPRIMENTO DE ENERGIA ---");
+    Serial.println(" sup                pede leitura do INA agora (" SUP_PEDIDO ")");
+    Serial.println();
+    Serial.println("--- CONTROLE DE ATITUDE ---");
+    Serial.println(" ctrl <texto>       envia <texto> a placa de controle");
+    Serial.println(" <outro texto>      tambem vai para a placa de controle");
+    Serial.println();
+    Serial.println("--- BASE (LoRa) ---");
+    Serial.println(" base <texto>       envia <texto> para a LoRaRX (teste de enlace)");
+    Serial.println("=========================================================");
+}
+
+static void imprimirPainel()
+{
+    Serial.println();
+    Serial.println("=============== OBC - DADOS ===============");
+    if (tstSensorOk) {
+        const sensorsData& d = tstSensor;
+        Serial.printf("Tempo      : %lu s\n", (unsigned long)d.seconds);
+        Serial.printf("Ambiente   : T %.2f C | U %.2f %% | P %lu Pa | Alt %.1f m\n",
+                      d.temperatura / 100.0f, d.umidade / 100.0f,
+                      (unsigned long)d.pressao, d.altitude / 10.0f);
+        Serial.printf("GPS        : %.7f, %.7f | sats %u\n",
+                      d.latitude / 10000000.0f, d.longitude / 10000000.0f, d.sats);
+        Serial.printf("Giroscopio : roll %.2f | pitch %.2f | yaw %.2f (graus/s)\n",
+                      d.roll / 100.0f, d.pitch / 100.0f, d.yaw / 100.0f);
+    } else {
+        Serial.println("Sensores   : sem dados ainda");
+    }
+    Serial.printf("Suprimento : %s\n", tstSup[0] ? tstSup : "sem dados ainda");
+    Serial.printf("Controle   : %s\n", ctrlUltimoAng[0] ? ctrlUltimoAng : "sem dados ainda");
+    Serial.printf("Orange     : %s | auto %d | AC %lu | ok %lu | invalidas %lu\n",
+                  OP_NOMES[opEstado], opAutoAtivo ? 1 : 0, (unsigned long)opAcRx,
+                  (unsigned long)opLinhasOk, (unsigned long)opLinhasInvalidas);
+    Serial.printf("LoRa       : %s | imagem %s (%u/%u) | filas prio %u ac %u sup %u\n",
+                  idle ? "ocioso" : "transmitindo", imgTx.ativo ? "enviando" : "parada",
+                  imgTx.index, imgTx.total, prioFila.n, acFila.n, supFila.n);
+    Serial.println("===========================================");
+}
+
+static void consoleUSB(const String& linha)
+{
+    String l = linha;
+    String low = l;
+    low.toLowerCase();
+
+    if (low == "ajuda" || low == "?") { imprimirAjuda();  return; }
+    if (low == "dados")               { imprimirPainel(); return; }
+    if (low == "monitor") {
+        tstMonitor = !tstMonitor;
+        tstUltimoPainel = 0;
+        Serial.printf("[TESTE] monitor %s\n", tstMonitor ? "LIGADO" : "DESLIGADO");
+        return;
+    }
+
+    if (low == "sup") {
+        supSerial.println(SUP_PEDIDO);
+        Serial.println("[TESTE] pedido enviado ao suprimento: " SUP_PEDIDO);
+        return;
+    }
+    if (low.startsWith("base ")) {
+        String t = l.substring(5);
+        t.trim();
+        if (t.length()) {
+            prioFila.push(t.c_str());
+            Serial.print("[TESTE] na fila para a base: ");
+            Serial.println(t);
+        }
+        return;
+    }
+    if (low.startsWith("ctrl ")) {
+        l = l.substring(5);
+        l.trim();
+        if (!l.length()) return;
+    }
+
+    // Atalhos iguais aos da LoRaRX
+    if      (l == "15") l = "OP,START,600";
+    else if (l == "16") l = "OP,STOP";
+    else if (l == "17") l = "OP,PING";
+
+    Serial.print("[USB] ");
+    Serial.println(l);
+
+    cmdLocal = true;            // respostas imediatas ficam no Monitor Serial
+    executarComando(l);
+    cmdLocal = false;
 }
 
 bool telemetriaSendString(const char* texto)
@@ -881,6 +1026,8 @@ void taskTelemetria(void *parameter)
     supInit();
     opInit();
 
+    Serial.println("[OBC] console de teste pronto. Digite 'ajuda'.");
+
     while (true)
     {
         telemetriaProcess();
@@ -896,12 +1043,21 @@ void taskTelemetria(void *parameter)
 
         ctrlTick();
 
+        // Painel automatico de teste (comando 'monitor')
+        if (tstMonitor && now - tstUltimoPainel >= TST_PAINEL_MS) {
+            imprimirPainel();
+            tstUltimoPainel = now;
+        }
+
         // 1) Guarda o dado de sensores mais recente
         if (xQueueReceive(filaTelemetria, &dados, 0) == pdPASS)
         {
             ultimoSensor = dados;
             sensorPendente = true;
             ultimoSensorFila = now;
+
+            tstSensor = dados;          // painel de teste
+            tstSensorOk = true;
         }
         else if (now - ultimoSensorFila > 5000 && now - ultimoAvisoFila > 5000)
         {
@@ -940,7 +1096,7 @@ void taskTelemetria(void *parameter)
             // SO o pacote do sensor. Nada de suprimento aqui.
             if (telemetriaSendPacket((uint8_t*)&ultimoSensor, sizeof(ultimoSensor), TYPE_SENSOR))
             {
-                Serial.println("[TX->BASE] SENSOR");
+                // Serial.println("[TX->BASE] SENSOR");   // print do envio de sensor (desativado)
                 lastSensorSend = now;
                 sensorPendente = false;     // so da baixa se transmitiu de verdade
             }
