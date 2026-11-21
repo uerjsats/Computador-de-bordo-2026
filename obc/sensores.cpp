@@ -422,17 +422,18 @@ void taskSensores(void *pvParameters)
     float gyroY = 0;
     float gyroZ = 0;
 
-    mpuUpdate(gyroX, gyroY, gyroZ, accelX, accelY, accelZ);
-    dhtUpdate(temperatura, umidade);
-    bme_update();
-
-    float pressao = bme_get_pressure();
-    float altitude = bme_get_altitude(101739.0f);
-    gpsUpdate(latitude, longitude, sats);
-
     while (true)
     {
         memset(&dados, 0, sizeof(sensorsData));
+
+        //Atualiza sensores
+        mpuUpdate(gyroX, gyroY, gyroZ, accelX, accelY, accelZ);
+        dhtUpdate(temperatura, umidade);
+        bme_update();
+
+        float pressao = bme_get_pressure();
+        float altitude = bme_get_altitude(101739.0f);
+        gpsUpdate(latitude, longitude, sats);
 
         // Timestamp
         dados.seconds = millis() / 1000;
